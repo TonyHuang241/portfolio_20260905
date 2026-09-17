@@ -1,0 +1,12 @@
+{
+    "stock_minutes_dir": "a_share_market_data/stock_minutes/",
+    "limit_price_dir": "a_share_market_data/limit_price/",
+    "stock_st_status_dir": "a_share_market_data/stock_st_status/",
+    "adj_factor_dir": "a_share_market_data/adj_factor/",
+    "output_dir": "a_share_market_data/factors/",
+    "factor_calc_dir": "portfolio_20260905/factors/construction/factor_calculation/",
+
+    "start_date": "20260101",
+    "end_date": "20260914",
+    "update_all": 0
+}

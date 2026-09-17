@@ -1,0 +1,5 @@
+{
+    "new_data_dir": "a_share_market_data/__daily_data_update/",
+    "output_dir": "a_share_market_data/",
+    "start_date": "20180101"
+}
