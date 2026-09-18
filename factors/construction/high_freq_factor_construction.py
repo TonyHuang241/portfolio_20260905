@@ -68,13 +68,14 @@ class HighFreqFactorConstructor:
             return pd.read_parquet(BytesIO(archive.read(file_name)))
 
     @staticmethod
-    def _calculate_factor(factor_name, minutes, daily_limit_price):
+    def _calculate_factor(task):
         """计算单个因子的原始值，供进程池调用。"""
+        factor_name, minutes, daily_limit_price = task
         module = import_module(f"factors.construction.factor_calculation.{factor_name}")
-        return getattr(module, factor_name)(minutes=minutes, limit_price=daily_limit_price).calculate()
+        return factor_name, getattr(module, factor_name)(minutes=minutes, limit_price=daily_limit_price).calculate()
 
-    def _calculate_trade_date(self, task):
-        """读取并清洗一天的行情，顺序计算当天缺失的因子，供进程池调用。"""
+    def _calculate_trade_date(self, task, pool):
+        """读取并清洗一天的行情，并行计算当天缺失的因子。"""
         trade_date, pending_factors, daily_st_status, daily_limit_price = task
         minutes = self._read_minutes_file(self.stock_minutes_dir, trade_date)
         minutes = minutes.rename(columns={"amount": "money", "vol": "volume"})
@@ -92,10 +93,17 @@ class HighFreqFactorConstructor:
         invalid_day |= minutes.groupby(["code", "date"])["close"].transform("nunique").eq(1)
         minutes.loc[invalid_day, minutes.columns.difference(["code", "trade_time", "date"])] = np.nan
 
-        return trade_date, {name: self._calculate_factor(name, minutes, daily_limit_price) for name in pending_factors}
+        tasks = ((name, minutes, daily_limit_price) for name in pending_factors)
+        daily_factors = {}
+        with tqdm(total=len(pending_factors), desc=f"Calculating factors: {trade_date}", unit="factor", leave=False) as factor_progress:
+            for factor_name, daily_factor in pool.imap_unordered(self._calculate_factor, tasks):
+                daily_factors[factor_name] = daily_factor
+                factor_progress.set_postfix_str(f"Completed factor: {factor_name}")
+                factor_progress.update()
+        return trade_date, daily_factors
 
     def update_factors(self):
-        """按交易日并行更新因子数据。"""
+        """逐日更新因子数据，每天的原始因子使用两个进程并行计算。"""
         trade_dates = sorted(date for date in self.trade_date if self.start_date <= date <= self.end_date)
         factor_data = {}
         exist_dates = {}
@@ -124,7 +132,7 @@ class HighFreqFactorConstructor:
         stock_st_status = pd.read_parquet(os.path.join(self.stock_st_status_dir, "stock_st_status.parquet"))
         stock_st_status_by_date = stock_st_status.groupby("date")
 
-        # 按交易日并行，分钟数据在子进程内读取，避免在进程间传输整日行情。
+        # 交易日依次处理，复用两个工作进程计算每天缺失的原始因子。
         pending_dates = [date for date in trade_dates if date not in common_exist_dates]
         if pending_dates:
             tasks = (
@@ -132,9 +140,10 @@ class HighFreqFactorConstructor:
                  stock_st_status_by_date.get_group(date), limit_price_by_date.get_group(date))
                 for date in pending_dates
             )
-            with Pool(processes=min(2, len(pending_dates))) as pool:
+            with Pool(processes=2) as pool:
                 with tqdm(total=len(pending_dates), desc="Updating raw factor values", unit="trading day") as trade_date_progress:
-                    for trade_date, daily_factors in pool.imap_unordered(self._calculate_trade_date, tasks):
+                    for task in tasks:
+                        trade_date, daily_factors = self._calculate_trade_date(task, pool)
                         for factor_name, daily_factor in daily_factors.items():
                             factor_data[factor_name].append(daily_factor)
                         trade_date_progress.set_postfix_str(f"Completed date: {trade_date}")
