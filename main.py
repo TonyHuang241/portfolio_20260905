@@ -1,5 +1,8 @@
 import json
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings("ignore")
 
 CONFIG_FILE = "portfolio_20260905/config/config_factor_construction.json"
 CONFIG_LOCAL_FILE = Path(__file__).resolve().parent / "config_local.json"

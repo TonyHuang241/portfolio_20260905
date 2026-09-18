@@ -12,6 +12,13 @@ class DataUpdater:
         self.output_dir = config["output_dir"]
         self.start_date = config["start_date"]
 
+    @staticmethod
+    def _format_dates(dates: pd.Series) -> pd.Series:
+        # 先转换不重复的日期，再映射回各行，避免对全量数据重复格式化。
+        unique_dates = dates.dropna().drop_duplicates()
+        formatted_dates = pd.to_datetime(unique_dates).dt.strftime("%Y%m%d")
+        return dates.map(dict(zip(unique_dates, formatted_dates)))
+
     def integrate_data(self):
         minutes = pd.read_csv(Path(self.new_data_dir) / "daily_minutes.csv", dtype={"code": str})
         exrights = pd.read_csv(Path(self.new_data_dir) / "stock_exrights.csv", dtype={"code": str})
@@ -34,16 +41,23 @@ class DataUpdater:
 
         limit_price = pd.read_csv(Path(self.new_data_dir) / "limit_price.csv", dtype={"code": str, "date": str})
         # 日级日期统一使用 date 列及 YYYYMMDD 字符串，与因子和评估数据一致。
-        limit_price["date"] = pd.to_datetime(limit_price["date"]).dt.strftime("%Y%m%d")
+        limit_price["date"] = self._format_dates(limit_price["date"])
         limit_price_dir = Path(self.output_dir) / "limit_price"
         limit_price_dir.mkdir(parents=True, exist_ok=True)
         limit_price.to_parquet(limit_price_dir / "limit_price.parquet", index=False)
 
         stock_st_status = pd.read_csv(Path(self.new_data_dir) / "stock_st_status.csv", dtype={"code": str, "date": str})
-        stock_st_status["date"] = pd.to_datetime(stock_st_status["date"]).dt.strftime("%Y%m%d")
+        stock_st_status["date"] = self._format_dates(stock_st_status["date"])
         stock_st_status_dir = Path(self.output_dir) / "stock_st_status"
         stock_st_status_dir.mkdir(parents=True, exist_ok=True)
         stock_st_status.to_parquet(stock_st_status_dir / "stock_st_status.parquet", index=False)
+
+        mkcap = pd.read_csv(Path(self.new_data_dir) / "mkcap.csv", dtype={"code": str, "trading_day": str})
+        mkcap = mkcap.rename(columns={"trading_day": "date", "total_value": "mkcap"})
+        mkcap["date"] = self._format_dates(mkcap["date"])
+        fundamentals_dir = Path(self.output_dir) / "fundamentals"
+        fundamentals_dir.mkdir(parents=True, exist_ok=True)
+        mkcap.to_parquet(fundamentals_dir / "mkcap.parquet", index=False)
 
     def generate_backtest_data(self):
         backtest_dir = Path(self.output_dir) / "backtest_data"
@@ -52,13 +66,17 @@ class DataUpdater:
         start_date = pd.Timestamp(self.start_date).normalize()
         tables = []
         existing_dates = set()
+        needs_trim = False
 
         # 读取已有结果，记录起始日期之后已覆盖的交易日（含起始日）。
         if backtest_file.exists():
             existing_data = pd.read_parquet(backtest_file)
             existing_data["trade_time"] = pd.to_datetime(existing_data["trade_time"])
-            existing_data = existing_data.loc[existing_data["trade_time"] >= start_date]
-            existing_dates = set(existing_data["trade_time"].dt.normalize())
+            retained_rows = existing_data["trade_time"] >= start_date
+            needs_trim = not retained_rows.all()
+            if needs_trim:
+                existing_data = existing_data.loc[retained_rows]
+            existing_dates = set(existing_data["trade_time"].dt.normalize().drop_duplicates())
             tables.append(existing_data)
 
         # 从 ZIP 和普通文件夹中收集缺失日期，普通文件优先使用。
@@ -77,6 +95,10 @@ class DataUpdater:
             trade_date = pd.to_datetime(daily_file.stem, format="%Y%m%d")
             if trade_date >= start_date and trade_date not in existing_dates:
                 daily_sources[trade_date] = (daily_file, None)
+
+        # 没有待补日期且无需裁剪已有数据时，避免全量去重、排序和重写。
+        if tables and not daily_sources and not needs_trim:
+            return
 
         # 逐日提取恰好 10:00 的记录，保留全部数据列。
         with ExitStack() as stack:
