@@ -8,16 +8,12 @@
     "factor_calc_dir": "portfolio_20260905/factors/construction/factor_calculation/",
     "factor_list": [
         "MorningMomentum",
-        "MinuteReturnStd",
-        "MinuteReturnSkewness",
-        "OpeningVolumeRatio",
-        "MinuteAmihudIlliquidity",
-        "MinuteQRS"
+        "AfternoonMomentum"
     ],
 
-    "mkcap_bottom_pct": 1000,
-    "processes": 16,
-    "start_date": "20200101",
+    "mkcap_bottom_pct": 500,
+    "processes": 2,
+    "start_date": "20260101",
     "end_date": "20260914",
     "update_all": 1
 }

@@ -78,16 +78,13 @@ class HighFreqFactorConstructor:
     @staticmethod
     def _calculate_trade_date(task):
         """在工作进程中读取、清洗单日数据，并串行计算当天需要更新的因子。"""
-        trade_date, stock_minutes_dir, factor_names, daily_limit_price, daily_st_status, stock_codes = task
+        trade_date, stock_minutes_dir, factor_names, daily_limit_price, stock_codes = task
         minutes = HighFreqFactorConstructor._read_minutes_file(stock_minutes_dir, trade_date, stock_codes)
         minutes = minutes.rename(columns={"amount": "money", "vol": "volume"})
         minutes["trade_time"] = pd.to_datetime(minutes["trade_time"])
         minutes["date"] = minutes["trade_time"].dt.normalize()
         # 只格式化不同日期，避免对每日上百万条分钟记录重复转换字符串。
         minutes["date"] = minutes["date"].map({date: date.strftime("%Y%m%d") for date in minutes["date"].dropna().unique()})
-
-        # 剔除当天处于 ST 状态的股票。
-        minutes = minutes.loc[~minutes["code"].isin(daily_st_status.loc[daily_st_status["is_st"], "code"])]
 
         # 任一条开盘价为零或全天收盘价恒定，则清空该股票当天全部行情，保留代码和时间。
         invalid_day = minutes["open"].eq(0).groupby([minutes["code"], minutes["date"]]).transform("any")
@@ -102,6 +99,13 @@ class HighFreqFactorConstructor:
             results[factor_name] = factor.calculate()
         return trade_date, results
 
+    def _select_stock_codes(self, monthly_mkcap, daily_st_status):
+        """在已剔除非主板的月度市值中，先剔除当天 ST，再筛选小市值股票。"""
+        monthly_mkcap = monthly_mkcap.loc[~monthly_mkcap["code"].isin(daily_st_status.loc[daily_st_status["is_st"], "code"])].copy()
+        # 月度市值已使用上月末数据；参数大于 1 时按只数筛选，否则按比例筛选。
+        monthly_mkcap["mkcap_rank"] = monthly_mkcap["mkcap"].rank(method="first", pct=self.mkcap_bottom_pct <= 1)
+        return monthly_mkcap.loc[monthly_mkcap["mkcap_rank"] <= self.mkcap_bottom_pct, "code"].tolist()
+
     def update_factors(self):
         """逐日更新因子数据。"""
         if self.update_all == 1:
@@ -111,12 +115,7 @@ class HighFreqFactorConstructor:
         mkcap_monthly = pd.read_parquet(os.path.join(self.stock_minutes_dir, "..", "fundamentals", "mkcap_monthly.parquet"), columns=["code", "date", "mkcap"])
         # 剔除科创板、创业板及北交所。
         mkcap_monthly = mkcap_monthly.loc[~mkcap_monthly["code"].str.startswith(("300", "301", "302", "688", "689", "92"))]
-        # 月度市值已使用上月末数据；参数大于 1 时按只数筛选，否则按比例筛选。
-        mkcap_monthly["mkcap_rank"] = mkcap_monthly.groupby("date")["mkcap"].rank(method="first", pct=self.mkcap_bottom_pct <= 1)
-        stock_codes_by_month = {
-            date: group.loc[group["mkcap_rank"] <= self.mkcap_bottom_pct, "code"].tolist()
-            for date, group in mkcap_monthly.groupby("date")
-        }
+        mkcap_by_month = mkcap_monthly.groupby("date")
         trade_dates = sorted(date for date in self.trade_date if self.start_date <= date <= self.end_date)
         factor_data = {}
         exist_dates = {}
@@ -153,8 +152,7 @@ class HighFreqFactorConstructor:
                 self.stock_minutes_dir,
                 [name for name in self.factors if trade_date not in exist_dates[name]],
                 limit_price_by_date.get_group(trade_date),
-                stock_st_status_by_date.get_group(trade_date),
-                stock_codes_by_month[trade_date[:6] + "01"],
+                self._select_stock_codes(mkcap_by_month.get_group(trade_date[:6] + "01"), stock_st_status_by_date.get_group(trade_date)),
             )
             for trade_date in pending_dates
         )
