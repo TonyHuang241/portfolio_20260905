@@ -171,7 +171,7 @@ class HighFreqFactorConstructor:
             factor = factor.drop_duplicates(["code", "date"], keep="last")
             factor = factor.sort_values(["code", "date"]).reset_index(drop=True)
             factor_by_code = factor.groupby("code")[factor_name]
-            for window in (5, 20, 60):
+            for window in (5, 20, 60, 120, 250):
                 rolling = factor_by_code.rolling(window)
                 factor[f"{factor_name}_{window}_m"] = rolling.mean().droplevel(0).reindex(factor.index)
                 # factor[f"{factor_name}_{window}_std"] = rolling.std().droplevel(0).reindex(factor.index)

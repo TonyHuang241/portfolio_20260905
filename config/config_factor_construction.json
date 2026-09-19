@@ -13,7 +13,7 @@
 
     "mkcap_bottom_pct": 500,
     "processes": 2,
-    "start_date": "20260101",
+    "start_date": "20250601",
     "end_date": "20260914",
     "update_all": 1
 }
