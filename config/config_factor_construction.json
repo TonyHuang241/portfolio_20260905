@@ -11,12 +11,13 @@
         "MinuteReturnStd",
         "MinuteReturnSkewness",
         "OpeningVolumeRatio",
-        "MinuteAmihudIlliquidity"
+        "MinuteAmihudIlliquidity",
+        "MinuteQRS"
     ],
 
     "mkcap_bottom_pct": 1000,
     "processes": 4,
     "start_date": "20260601",
     "end_date": "20260914",
-    "update_all": 1
+    "update_all": 0
 }
