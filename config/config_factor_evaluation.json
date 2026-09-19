@@ -8,6 +8,7 @@
     "factor_data_dir": "a_share_market_data/factors/",
     
     "specified_column": "",
-    "start_date": "20180101",
-    "update_all": 0
+    "start_date": "20230101",
+    "processes": 16,
+    "update_all": 1
 }

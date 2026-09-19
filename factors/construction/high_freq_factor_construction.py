@@ -1,4 +1,5 @@
 import os
+import shutil
 from io import BytesIO
 from importlib import import_module
 from multiprocessing import Pool
@@ -103,7 +104,13 @@ class HighFreqFactorConstructor:
 
     def update_factors(self):
         """逐日更新因子数据。"""
+        if self.update_all == 1:
+            shutil.rmtree(self.output_dir, ignore_errors=True)
+            os.makedirs(self.output_dir, exist_ok=True)
+
         mkcap_monthly = pd.read_parquet(os.path.join(self.stock_minutes_dir, "..", "fundamentals", "mkcap_monthly.parquet"), columns=["code", "date", "mkcap"])
+        # 剔除科创板、创业板及北交所。
+        mkcap_monthly = mkcap_monthly.loc[~mkcap_monthly["code"].str.startswith(("300", "301", "302", "688", "689", "92"))]
         # 月度市值已使用上月末数据；参数大于 1 时按只数筛选，否则按比例筛选。
         mkcap_monthly["mkcap_rank"] = mkcap_monthly.groupby("date")["mkcap"].rank(method="first", pct=self.mkcap_bottom_pct <= 1)
         stock_codes_by_month = {

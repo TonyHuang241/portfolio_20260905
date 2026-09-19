@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 
-from factors.evaluation.single_factor_evaluation import SingleFactorEvaluation
+from factors.evaluation.single_factor_evaluation import SingleFactorEvaluation, _clear_existing_results
 
 
 class MultiFactorEvaluation:
@@ -17,6 +17,9 @@ class MultiFactorEvaluation:
 
         prices_by_date = SingleFactorEvaluation.load_prices(self.config["backtest_data_dir"])
         records = []
+        if self.config.get("update_all") == 1:
+            _clear_existing_results(self.config["output_dir"], self.config.get("visualization_output_dir"))
+
         for factor_path in tqdm(factor_files, desc="Evaluating factor files", unit="file"):
             factor_data = pd.read_parquet(factor_path)
             for factor_name in factor_data.columns.drop(["code", "date"]):

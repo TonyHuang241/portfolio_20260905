@@ -6,7 +6,16 @@ import pandas as pd
 import numpy as np
 
 import os
+import shutil
 from factors.evaluation.results_visualization.results_visualizer import ResultsVisualizer
+
+
+def _clear_existing_results(output_dir, visualization_output_dir):
+    for directory in (output_dir, visualization_output_dir):
+        if directory:
+            shutil.rmtree(directory, ignore_errors=True)
+            os.makedirs(directory, exist_ok=True)
+
 
 class SingleFactorEvaluation:
     def __init__(self, config, factor_data=None):
@@ -14,6 +23,7 @@ class SingleFactorEvaluation:
         self.start_date = config["start_date"]
         self.update_all = config["update_all"]
         self.processes = config.get("processes", 4)
+        self._clear_outputs = factor_data is None
 
         specified_column = config["specified_column"]
         if factor_data is None:
@@ -55,7 +65,9 @@ class SingleFactorEvaluation:
             return evaluation_date, groups, None
 
         current_values = current_prices.reindex(daily_factor["code"]).to_numpy()
-        next_returns = next_prices.reindex(daily_factor["code"]).to_numpy() / current_values - 1
+        next_values = next_prices.reindex(daily_factor["code"]).to_numpy()
+        next_returns = next_values / current_values - 1
+        next_returns[np.isnan(next_returns) & ~np.isnan(current_values)] = 0
         sorted_returns = np.split(next_returns[sorted_indices], split_points)
         valid = ~np.isnan(next_returns)
         ic = np.corrcoef(factor_values[valid], next_returns[valid])[0, 1]
@@ -66,6 +78,9 @@ class SingleFactorEvaluation:
 
     def evaluate(self, prices_by_date=None):
         """保存结果和报告并返回汇总指标；未传入价格分组时才读取价格。"""
+        if self.update_all == 1 and self._clear_outputs:
+            _clear_existing_results(self.output_dir, self.visualization_output_dir)
+
         output_path = Path(self.output_dir) / f"{self.factor_name}.csv"
         columns = [f"group_{group}" for group in range(1, 6)] + ["IC", "rankIC"]
         columns += [f"group_{group}_count" for group in range(1, 6)]
