@@ -2,11 +2,21 @@
     "stock_minutes_dir": "a_share_market_data/stock_minutes/",
     "limit_price_dir": "a_share_market_data/limit_price/",
     "stock_st_status_dir": "a_share_market_data/stock_st_status/",
+    "fundamentals_dir": "a_share_market_data/fundamentals/",
     "adj_factor_dir": "a_share_market_data/adj_factor/",
     "output_dir": "a_share_market_data/factors/",
     "factor_calc_dir": "portfolio_20260905/factors/construction/factor_calculation/",
+    "factor_list": [
+        "MorningMomentum",
+        "MinuteReturnStd",
+        "MinuteReturnSkewness",
+        "OpeningVolumeRatio",
+        "MinuteAmihudIlliquidity"
+    ],
 
-    "start_date": "20260101",
+    "mkcap_bottom_pct": 1000,
+    "processes": 4,
+    "start_date": "20260601",
     "end_date": "20260914",
-    "update_all": 0
+    "update_all": 1
 }

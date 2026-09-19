@@ -21,9 +21,11 @@ class HighFreqFactorConstructor:
         self.start_date = config["start_date"]
         self.end_date = config["end_date"]
         self.update_all = config["update_all"]
+        self.mkcap_bottom_pct = config["mkcap_bottom_pct"]
+        self.processes = config["processes"]
 
         self._update_trade_date()
-        self._regist_factors()
+        self._regist_factors(config.get("factor_list", []))
 
         pass
 
@@ -47,28 +49,67 @@ class HighFreqFactorConstructor:
 
         self.trade_date = sorted(trade_dates)
 
-    def _regist_factors(self):
-        """注册项目 factor_calculation 包中的因子，文件名、类名与因子名须一致。"""
+    def _regist_factors(self, factor_list=None):
+        """注册指定因子，列表为空时注册全部因子；文件名、类名与因子名须一致。"""
+        if factor_list:
+            self.factors = list(factor_list)
+            return
+
         self.factors = [
             file[:-3] for file in sorted(os.listdir(self.factor_calc_dir))
             if not file.startswith("_") and file.endswith(".py") and os.path.isfile(os.path.join(self.factor_calc_dir, file))
         ]
 
     @staticmethod
-    def _read_minutes_file(stock_minutes_dir, trade_date):
-        """读取日度股票分钟回报数据"""
+    def _read_minutes_file(stock_minutes_dir, trade_date, stock_codes):
+        """只读取指定股票的日度分钟回报数据。"""
+        stock_codes = np.asarray(stock_codes, dtype=str)  # 空清单也保留字符串类型，供 Parquet 筛选。
         year_path = os.path.join(stock_minutes_dir, trade_date[:4])
         file_name = f"{trade_date}.parquet"
         minutes_path = os.path.join(year_path, file_name)
         if os.path.isfile(minutes_path):
-            return pd.read_parquet(minutes_path)
+            return pd.read_parquet(minutes_path, engine="pyarrow", filters=[("code", "in", stock_codes)])
 
         with ZipFile(f"{year_path}.zip") as archive:
             # Parquet 会随机读取文件，先一次性解压，避免 ZIP 文件流反复解压。
-            return pd.read_parquet(BytesIO(archive.read(file_name)))
+            return pd.read_parquet(BytesIO(archive.read(file_name)), engine="pyarrow", filters=[("code", "in", stock_codes)])
+
+    @staticmethod
+    def _calculate_trade_date(task):
+        """在工作进程中读取、清洗单日数据，并串行计算当天需要更新的因子。"""
+        trade_date, stock_minutes_dir, factor_names, daily_limit_price, daily_st_status, stock_codes = task
+        minutes = HighFreqFactorConstructor._read_minutes_file(stock_minutes_dir, trade_date, stock_codes)
+        minutes = minutes.rename(columns={"amount": "money", "vol": "volume"})
+        minutes["trade_time"] = pd.to_datetime(minutes["trade_time"])
+        minutes["date"] = minutes["trade_time"].dt.normalize()
+        # 只格式化不同日期，避免对每日上百万条分钟记录重复转换字符串。
+        minutes["date"] = minutes["date"].map({date: date.strftime("%Y%m%d") for date in minutes["date"].dropna().unique()})
+
+        # 剔除当天处于 ST 状态的股票。
+        minutes = minutes.loc[~minutes["code"].isin(daily_st_status.loc[daily_st_status["is_st"], "code"])]
+
+        # 任一条开盘价为零或全天收盘价恒定，则清空该股票当天全部行情，保留代码和时间。
+        invalid_day = minutes["open"].eq(0).groupby([minutes["code"], minutes["date"]]).transform("any")
+        # 用唯一值数量判断价格恒定，避免浮点误差使标准差不严格为零。
+        invalid_day |= minutes.groupby(["code", "date"])["close"].transform("nunique").eq(1)
+        minutes.loc[invalid_day, minutes.columns.difference(["code", "trade_time", "date"])] = np.nan
+
+        results = {}
+        for factor_name in factor_names:
+            module = import_module(f"factors.construction.factor_calculation.{factor_name}")
+            factor = getattr(module, factor_name)(minutes=minutes, limit_price=daily_limit_price)
+            results[factor_name] = factor.calculate()
+        return trade_date, results
 
     def update_factors(self):
         """逐日更新因子数据。"""
+        mkcap_monthly = pd.read_parquet(os.path.join(self.stock_minutes_dir, "..", "fundamentals", "mkcap_monthly.parquet"), columns=["code", "date", "mkcap"])
+        # 月度市值已使用上月末数据；参数大于 1 时按只数筛选，否则按比例筛选。
+        mkcap_monthly["mkcap_rank"] = mkcap_monthly.groupby("date")["mkcap"].rank(method="first", pct=self.mkcap_bottom_pct <= 1)
+        stock_codes_by_month = {
+            date: group.loc[group["mkcap_rank"] <= self.mkcap_bottom_pct, "code"].tolist()
+            for date, group in mkcap_monthly.groupby("date")
+        }
         trade_dates = sorted(date for date in self.trade_date if self.start_date <= date <= self.end_date)
         factor_data = {}
         exist_dates = {}
@@ -97,37 +138,26 @@ class HighFreqFactorConstructor:
         stock_st_status = pd.read_parquet(os.path.join(self.stock_st_status_dir, "stock_st_status.parquet"))
         stock_st_status_by_date = stock_st_status.groupby("date")
 
-        # 逐日计算因子值
-        trade_date_progress = tqdm(trade_dates, desc="Updating raw factor values", unit="trading day")
-        for trade_date in trade_date_progress:
-            trade_date_progress.set_postfix_str(f"Current date: {trade_date}")
-            if trade_date in common_exist_dates:
-                continue
-
-            minutes = self._read_minutes_file(self.stock_minutes_dir, trade_date)
-            minutes = minutes.rename(columns={"amount": "money", "vol": "volume"})
-            minutes["trade_time"] = pd.to_datetime(minutes["trade_time"])
-            minutes["date"] = minutes["trade_time"].dt.normalize()
-            # 只格式化不同日期，避免对每日上百万条分钟记录重复转换字符串。
-            minutes["date"] = minutes["date"].map({date: date.strftime("%Y%m%d") for date in minutes["date"].dropna().unique()})
-
-            # 剔除当天处于 ST 状态的股票。
-            daily_st_status = stock_st_status_by_date.get_group(trade_date)
-            minutes = minutes.loc[~minutes["code"].isin(daily_st_status.loc[daily_st_status["is_st"], "code"])]
-
-            # 任一条开盘价为零或全天收盘价恒定，则清空该股票当天全部行情，保留代码和时间。
-            invalid_day = minutes["open"].eq(0).groupby([minutes["code"], minutes["date"]]).transform("any")
-            # 用唯一值数量判断价格恒定，避免浮点误差使标准差不严格为零。
-            invalid_day |= minutes.groupby(["code", "date"])["close"].transform("nunique").eq(1)
-            minutes.loc[invalid_day, minutes.columns.difference(["code", "trade_time", "date"])] = np.nan
-
-            daily_limit_price = limit_price_by_date.get_group(trade_date)
-
-            # 使用多进程并行计算当天需要更新的因子
-            with Pool() as pool:
-                pending = {factor_name: pool.apply_async(getattr(import_module(f"factors.construction.factor_calculation.{factor_name}"), factor_name)(minutes=minutes, limit_price=daily_limit_price).calculate) for factor_name in self.factors if trade_date not in exist_dates[factor_name]}
-                for factor_name, async_result in pending.items():
-                    factor_data[factor_name].append(async_result.get())
+        # 按交易日并行，每个工作进程内串行计算当天需要更新的因子。
+        pending_dates = [date for date in trade_dates if date not in common_exist_dates]
+        tasks = (
+            (
+                trade_date,
+                self.stock_minutes_dir,
+                [name for name in self.factors if trade_date not in exist_dates[name]],
+                limit_price_by_date.get_group(trade_date),
+                stock_st_status_by_date.get_group(trade_date),
+                stock_codes_by_month[trade_date[:6] + "01"],
+            )
+            for trade_date in pending_dates
+        )
+        with Pool(processes=self.processes) as pool:
+            results = pool.imap_unordered(HighFreqFactorConstructor._calculate_trade_date, tasks)
+            trade_date_progress = tqdm(results, total=len(pending_dates), desc="Updating raw factor values", unit="trading day")
+            for trade_date, daily_results in trade_date_progress:
+                trade_date_progress.set_postfix_str(f"Completed date: {trade_date}")
+                for factor_name, daily_factor in daily_results.items():
+                    factor_data[factor_name].append(daily_factor)
 
         # 逐个计算并保存，避免同时保留全部因子的滚动指标。
         os.makedirs(self.output_dir, exist_ok=True)

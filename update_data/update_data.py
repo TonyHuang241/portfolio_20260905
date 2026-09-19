@@ -59,6 +59,12 @@ class DataUpdater:
         fundamentals_dir.mkdir(parents=True, exist_ok=True)
         mkcap.to_parquet(fundamentals_dir / "mkcap.parquet", index=False)
 
+        # 每只股票上月最后一个交易日的市值，记在当月第一天。
+        mkcap_monthly = mkcap.sort_values("date")
+        mkcap_monthly["date"] = (pd.to_datetime(mkcap_monthly["date"], format="%Y%m%d") + pd.offsets.MonthBegin(1)).dt.strftime("%Y%m%d")
+        mkcap_monthly = mkcap_monthly.drop_duplicates(subset=["code", "date"], keep="last")
+        mkcap_monthly.to_parquet(fundamentals_dir / "mkcap_monthly.parquet", index=False)
+
     def generate_backtest_data(self):
         backtest_dir = Path(self.output_dir) / "backtest_data"
         backtest_dir.mkdir(parents=True, exist_ok=True)
