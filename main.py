@@ -7,8 +7,6 @@ warnings.filterwarnings("ignore")
 CONFIG_FILE = "portfolio_20260905/config/config_factor_construction.json"
 CONFIG_LOCAL_FILE = Path(__file__).resolve().parent / "config_local.json"
 
-# test of git repository
-
 def load_config(config_file=CONFIG_FILE):
     """根据 config_local.json 中的根目录，将配置的 *_dir / *_path 转为本地路径。"""
     config_local = json.loads(CONFIG_LOCAL_FILE.read_text(encoding="utf-8"))
