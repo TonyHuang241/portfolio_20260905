@@ -4,7 +4,7 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
-CONFIG_FILE = "portfolio_20260905/config/config_factor_construction.json"
+CONFIG_FILE = "portfolio_20260905/config/config_factor_evaluation.json"
 CONFIG_LOCAL_FILE = Path(__file__).resolve().parent / "config_local.json"
 
 def load_config(config_file=CONFIG_FILE):

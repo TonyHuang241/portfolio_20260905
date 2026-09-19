@@ -1,4 +1,5 @@
 from pathlib import Path
+from multiprocessing import Pool
 from tqdm import tqdm
 
 import pandas as pd
@@ -12,6 +13,7 @@ class SingleFactorEvaluation:
         self.backtest_data_dir = config["backtest_data_dir"]
         self.start_date = config["start_date"]
         self.update_all = config["update_all"]
+        self.processes = config.get("processes", 4)
 
         specified_column = config["specified_column"]
         if factor_data is None:
@@ -41,6 +43,27 @@ class SingleFactorEvaluation:
         data["date"] = pd.to_datetime(data["trade_time"]).dt.strftime("%Y%m%d")
         return data.set_index("code").groupby("date")["close"]
 
+    @staticmethod
+    def _evaluate_date(task):
+        """计算单日分组及指标；已有结果的日期只返回分组，供下一日计算换手率。"""
+        evaluation_date, daily_factor, current_prices, next_prices = task
+        factor_values = daily_factor["__factor"].to_numpy(dtype=float)
+        sorted_indices = np.argsort(factor_values, kind="stable")
+        split_points = (1 + (len(factor_values) - 1) * np.arange(1, 5) / 5).astype(int)
+        groups = [set(group) for group in np.split(daily_factor["code"].to_numpy()[sorted_indices], split_points)]
+        if current_prices is None:
+            return evaluation_date, groups, None
+
+        current_values = current_prices.reindex(daily_factor["code"]).to_numpy()
+        next_returns = next_prices.reindex(daily_factor["code"]).to_numpy() / current_values - 1
+        sorted_returns = np.split(next_returns[sorted_indices], split_points)
+        valid = ~np.isnan(next_returns)
+        ic = np.corrcoef(factor_values[valid], next_returns[valid])[0, 1]
+        rank_ic = np.corrcoef(pd.Series(factor_values[valid]).rank(), pd.Series(next_returns[valid]).rank())[0, 1]
+        values = [np.nanmean(group) for group in sorted_returns] + [ic, rank_ic]
+        values += [np.count_nonzero(~np.isnan(group)) for group in sorted_returns]
+        return evaluation_date, groups, values
+
     def evaluate(self, prices_by_date=None):
         """保存结果和报告并返回汇总指标；未传入价格分组时才读取价格。"""
         output_path = Path(self.output_dir) / f"{self.factor_name}.csv"
@@ -69,53 +92,25 @@ class SingleFactorEvaluation:
 
         existing_dates = set(existing_evaluation.reindex(columns=columns[7:]).dropna().index)
         previous_groups = None
-
-        for date_index, trade_date in enumerate(tqdm(self.trade_dates[:-1], desc="Evaluating factor", unit="trading day")):
-            evaluation_date = str(trade_date)
-
-            # 计算换手率
-            daily_factor = factor_by_date.get_group(trade_date)
-            factor_values = daily_factor["__factor"].to_numpy(dtype=float)
-            sorted_indices = np.argsort(factor_values, kind="stable")
-            split_points = (1 + (len(factor_values) - 1) * np.arange(1, 5) / 5).astype(int)
-            groups = [set(group) for group in np.split(daily_factor["code"].to_numpy()[sorted_indices], split_points)]
-            # 等权非空组的换手率 = 1 - 交集数量 / 较大组数量；单侧空组为 0.5，双侧空组为 0。
-            turnover = [
-                1 - len(current & previous) / max(len(current), len(previous)) if current and previous else (bool(current) + bool(previous)) / 2
-                for current, previous in zip(groups, previous_groups)
-            ] if previous_groups is not None else [np.nan] * 5
-            previous_groups = groups
-
-            # 判断当日结果是否已经计算过
-            if evaluation_date in existing_dates:
-                continue
-            evaluation.loc[evaluation_date, columns[12:]] = turnover
-
-            # 获取下一期的价格数据
-            next_trade_date = self.trade_dates[date_index + 1]
-            current_prices = prices_by_date.get_group(evaluation_date)
-            next_prices = prices_by_date.get_group(str(next_trade_date))
-
-            # 计算下一期的实际回报
-            current_values = current_prices.reindex(daily_factor["code"]).to_numpy()
-            next_returns = next_prices.reindex(daily_factor["code"]).to_numpy() / current_values - 1
-
-            sorted_returns = next_returns[sorted_indices]
-            evaluation.loc[evaluation_date, columns[:5]] = [
-                np.nanmean(group) for group in np.split(sorted_returns, split_points)
-            ]
-            evaluation.loc[evaluation_date, columns[7:12]] = [
-                np.count_nonzero(~np.isnan(group)) for group in np.split(sorted_returns, split_points)
-            ]
-
-            # 计算IC与RankIC
-            valid = ~np.isnan(next_returns)
-            evaluation.loc[evaluation_date, "IC"] = np.corrcoef(
-                factor_values[valid], next_returns[valid]
-            )[0, 1]
-            evaluation.loc[evaluation_date, "rankIC"] = np.corrcoef(
-                pd.Series(factor_values[valid]).rank(), pd.Series(next_returns[valid]).rank()
-            )[0, 1]
+        tasks = (
+            (
+                str(trade_date), factor_by_date.get_group(trade_date),
+                prices_by_date.get_group(str(trade_date)) if str(trade_date) not in existing_dates else None,
+                prices_by_date.get_group(str(next_trade_date)) if str(trade_date) not in existing_dates else None,
+            )
+            for trade_date, next_trade_date in zip(self.trade_dates[:-1], self.trade_dates[1:])
+        )
+        with Pool(processes=self.processes) as pool:
+            results = pool.imap(self._evaluate_date, tasks)
+            for evaluation_date, groups, values in tqdm(results, total=len(evaluation), desc="Evaluating factor", unit="trading day"):
+                # imap 按日期顺序返回，换手率仍使用上一交易日分组。
+                turnover = [
+                    1 - len(current & previous) / max(len(current), len(previous)) if current and previous else (bool(current) + bool(previous)) / 2
+                    for current, previous in zip(groups, previous_groups)
+                ] if previous_groups is not None else [np.nan] * 5
+                previous_groups = groups
+                if values is not None:
+                    evaluation.loc[evaluation_date] = values + turnover
 
         evaluation = evaluation.dropna(subset=columns[:7], how="all")
         evaluation = pd.concat([existing_evaluation, evaluation])
