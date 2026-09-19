@@ -2,6 +2,7 @@
 
 import argparse
 import io
+import json
 import sys
 from html import escape
 from pathlib import Path
@@ -17,7 +18,13 @@ import pandas as pd
 class ResultsVisualizer:
     GROUPS = [f"group_{group}" for group in range(1, 6)]
     COLORS = ["#2563eb", "#06a6a0", "#e7a32e", "#9764d9", "#ed6976"]
-    OUTPUT_DIR = Path(__file__).resolve().parents[1] / "output" / "visualization_output"
+
+    @staticmethod
+    def _default_output_dir():
+        project_dir = Path(__file__).resolve().parents[3]
+        local_config = json.loads((project_dir / "config_local.json").read_text(encoding="utf-8"))
+        config = json.loads((project_dir / "config/config_factor_evaluation.json").read_text(encoding="utf-8"))
+        return Path(local_config["root_dir"]).expanduser() / config["visualization_output_dir"]
 
     def __init__(self, factor_results, factor_name, start_date=None, output_dir=None,
                  periods_per_year=252, risk_free_rate=0.0):
@@ -30,7 +37,7 @@ class ResultsVisualizer:
             raise ValueError("periods_per_year must be positive and risk_free_rate must exceed -1.")
         self.factor_name = str(factor_name)
         self.start_date = start_date
-        self.output_dir = Path(output_dir) if output_dir is not None else self.OUTPUT_DIR
+        self.output_dir = Path(output_dir) if output_dir is not None else self._default_output_dir()
         self.periods_per_year = periods_per_year
         self.risk_free_rate = risk_free_rate
         data = factor_results.copy() if isinstance(factor_results, pd.DataFrame) else pd.read_csv(factor_results)
