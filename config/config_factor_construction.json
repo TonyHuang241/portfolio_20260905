@@ -1,7 +1,7 @@
 {
     "stock_minutes_dir": "a_share_market_data/stock_minutes/",
-    "limit_price_dir": "a_share_market_data/limit_price/",
     "stock_st_status_dir": "a_share_market_data/stock_st_status/",
+    "backtest_data_path": "a_share_market_data/backtest_data/backtest10am.parquet",
     "fundamentals_dir": "a_share_market_data/fundamentals/",
     "adj_factor_dir": "a_share_market_data/adj_factor/",
     "output_dir": "a_share_market_data/factors/",
@@ -11,9 +11,8 @@
         "AfternoonMomentum"
     ],
 
-    "mkcap_bottom_pct": 500,
     "processes": 2,
-    "start_date": "20250601",
+    "start_date": "20200101",
     "end_date": "20260914",
     "update_all": 1
 }

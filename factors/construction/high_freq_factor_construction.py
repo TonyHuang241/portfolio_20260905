@@ -13,8 +13,8 @@ from tqdm import tqdm
 class HighFreqFactorConstructor:
     def __init__(self, config):
         self.stock_minutes_dir = config["stock_minutes_dir"]
-        self.limit_price_dir = config["limit_price_dir"]
         self.stock_st_status_dir = config["stock_st_status_dir"]
+        self.backtest_data_path = config["backtest_data_path"]
         self.adj_factor_dir = config["adj_factor_dir"]
         self.output_dir = config["output_dir"]
         self.factor_calc_dir = config["factor_calc_dir"]
@@ -22,7 +22,6 @@ class HighFreqFactorConstructor:
         self.start_date = config["start_date"]
         self.end_date = config["end_date"]
         self.update_all = config["update_all"]
-        self.mkcap_bottom_pct = config["mkcap_bottom_pct"]
         self.processes = config["processes"]
 
         self._update_trade_date()
@@ -64,7 +63,8 @@ class HighFreqFactorConstructor:
     @staticmethod
     def _read_minutes_file(stock_minutes_dir, trade_date, stock_codes):
         """只读取指定股票的日度分钟回报数据。"""
-        stock_codes = np.asarray(stock_codes, dtype=str)  # 空清单也保留字符串类型，供 Parquet 筛选。
+        # 分钟文件保留原始后缀，兼容六位股票池代码及沪市历史上的两种后缀。
+        stock_codes = np.asarray([f"{code}{suffix}" for code in stock_codes for suffix in ("", ".SH", ".SS", ".SZ", ".BJ")], dtype=str)
         year_path = os.path.join(stock_minutes_dir, trade_date[:4])
         file_name = f"{trade_date}.parquet"
         minutes_path = os.path.join(year_path, file_name)
@@ -78,8 +78,9 @@ class HighFreqFactorConstructor:
     @staticmethod
     def _calculate_trade_date(task):
         """在工作进程中读取、清洗单日数据，并串行计算当天需要更新的因子。"""
-        trade_date, stock_minutes_dir, factor_names, daily_limit_price, stock_codes = task
+        trade_date, stock_minutes_dir, factor_names, stock_codes = task
         minutes = HighFreqFactorConstructor._read_minutes_file(stock_minutes_dir, trade_date, stock_codes)
+        minutes["code"] = minutes["code"].astype(str).str.split(".", n=1).str[0].str.zfill(6)
         minutes = minutes.rename(columns={"amount": "money", "vol": "volume"})
         minutes["trade_time"] = pd.to_datetime(minutes["trade_time"])
         minutes["date"] = minutes["trade_time"].dt.normalize()
@@ -95,16 +96,21 @@ class HighFreqFactorConstructor:
         results = {}
         for factor_name in factor_names:
             module = import_module(f"factors.construction.factor_calculation.{factor_name}")
-            factor = getattr(module, factor_name)(minutes=minutes, limit_price=daily_limit_price)
+            factor = getattr(module, factor_name)(minutes=minutes)
             results[factor_name] = factor.calculate()
         return trade_date, results
 
-    def _select_stock_codes(self, monthly_mkcap, daily_st_status):
-        """在已剔除非主板的月度市值中，先剔除当天 ST，再筛选小市值股票。"""
-        monthly_mkcap = monthly_mkcap.loc[~monthly_mkcap["code"].isin(daily_st_status.loc[daily_st_status["is_st"], "code"])].copy()
-        # 月度市值已使用上月末数据；参数大于 1 时按只数筛选，否则按比例筛选。
-        monthly_mkcap["mkcap_rank"] = monthly_mkcap["mkcap"].rank(method="first", pct=self.mkcap_bottom_pct <= 1)
-        return monthly_mkcap.loc[monthly_mkcap["mkcap_rank"] <= self.mkcap_bottom_pct, "code"].tolist()
+    def _select_stock_codes(self, trade_dates):
+        """生成每日股票池：主板、非 ST、连续交易至少 250 天、全天收盘价非恒定。"""
+        stock_pool = pd.read_parquet(self.backtest_data_path, columns=["code", "trade_time", "consecutive_trading_days", "is_constant_close"])
+        stock_pool = stock_pool.loc[stock_pool["code"].str.startswith(("000", "001", "002", "003", "600", "601", "603", "605"))]
+        stock_pool["date"] = pd.to_datetime(stock_pool["trade_time"]).dt.strftime("%Y%m%d")
+        stock_pool = stock_pool.loc[stock_pool["is_constant_close"].eq(False)]
+        stock_pool = stock_pool.loc[stock_pool["date"].isin(trade_dates) & stock_pool["consecutive_trading_days"].ge(250), ["date", "code"]]
+
+        stock_st_status = pd.read_parquet(os.path.join(self.stock_st_status_dir, "stock_st_status.parquet"), columns=["code", "date", "is_st"])
+        stock_pool = stock_pool.merge(stock_st_status, on=["code", "date"], how="left")
+        return stock_pool.loc[~stock_pool["is_st"].eq(True), ["date", "code"]]
 
     def update_factors(self):
         """逐日更新因子数据。"""
@@ -112,10 +118,6 @@ class HighFreqFactorConstructor:
             shutil.rmtree(self.output_dir, ignore_errors=True)
             os.makedirs(self.output_dir, exist_ok=True)
 
-        mkcap_monthly = pd.read_parquet(os.path.join(self.stock_minutes_dir, "..", "fundamentals", "mkcap_monthly.parquet"), columns=["code", "date", "mkcap"])
-        # 剔除科创板、创业板及北交所。
-        mkcap_monthly = mkcap_monthly.loc[~mkcap_monthly["code"].str.startswith(("300", "301", "302", "688", "689", "92"))]
-        mkcap_by_month = mkcap_monthly.groupby("date")
         trade_dates = sorted(date for date in self.trade_date if self.start_date <= date <= self.end_date)
         factor_data = {}
         exist_dates = {}
@@ -138,21 +140,17 @@ class HighFreqFactorConstructor:
 
         common_exist_dates = set.intersection(*exist_dates.values())
 
-        limit_price = pd.read_parquet(os.path.join(self.limit_price_dir, "limit_price.parquet"))
-        limit_price_by_date = limit_price.groupby("date")
-
-        stock_st_status = pd.read_parquet(os.path.join(self.stock_st_status_dir, "stock_st_status.parquet"))
-        stock_st_status_by_date = stock_st_status.groupby("date")
-
-        # 按交易日并行，每个工作进程内串行计算当天需要更新的因子。
         pending_dates = [date for date in trade_dates if date not in common_exist_dates]
+        stock_pool = self._select_stock_codes(pending_dates)
+        stock_codes_by_date = stock_pool.groupby("date")["code"].agg(list).to_dict()
+
+        # 股票池提前计算完毕；按交易日并行，每个工作进程内串行计算当天需要更新的因子。
         tasks = (
             (
                 trade_date,
                 self.stock_minutes_dir,
                 [name for name in self.factors if trade_date not in exist_dates[name]],
-                limit_price_by_date.get_group(trade_date),
-                self._select_stock_codes(mkcap_by_month.get_group(trade_date[:6] + "01"), stock_st_status_by_date.get_group(trade_date)),
+                stock_codes_by_date.get(trade_date, []),
             )
             for trade_date in pending_dates
         )

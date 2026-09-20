@@ -1,4 +1,6 @@
-from contextlib import ExitStack
+import gc
+from io import BytesIO
+from multiprocessing import Pool
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -11,6 +13,8 @@ class DataUpdater:
         self.new_data_dir = config["new_data_dir"]
         self.output_dir = config["output_dir"]
         self.start_date = config["start_date"]
+        self.processes = config["processes"]
+        self.update_all = config["update_all"]
 
     @staticmethod
     def _format_dates(dates: pd.Series) -> pd.Series:
@@ -22,6 +26,7 @@ class DataUpdater:
     def integrate_data(self):
         minutes = pd.read_csv(Path(self.new_data_dir) / "daily_minutes.csv", dtype={"code": str})
         exrights = pd.read_csv(Path(self.new_data_dir) / "stock_exrights.csv", dtype={"code": str})
+        exrights["code"] = exrights["code"].str.split(".", n=1).str[0].str.zfill(6)
         minutes = minutes.rename(columns={"Unnamed: 0": "trade_time", "datetime": "trade_time"})
 
         minutes["trade_time"] = pd.to_datetime(minutes["trade_time"])
@@ -40,6 +45,7 @@ class DataUpdater:
         exrights.to_csv(adj_factors_dir / "stock_exrights.csv", index=False, encoding="utf-8-sig")
 
         limit_price = pd.read_csv(Path(self.new_data_dir) / "limit_price.csv", dtype={"code": str, "date": str})
+        limit_price["code"] = limit_price["code"].str.split(".", n=1).str[0].str.zfill(6)
         # 日级日期统一使用 date 列及 YYYYMMDD 字符串，与因子和评估数据一致。
         limit_price["date"] = self._format_dates(limit_price["date"])
         limit_price_dir = Path(self.output_dir) / "limit_price"
@@ -47,12 +53,14 @@ class DataUpdater:
         limit_price.to_parquet(limit_price_dir / "limit_price.parquet", index=False)
 
         stock_st_status = pd.read_csv(Path(self.new_data_dir) / "stock_st_status.csv", dtype={"code": str, "date": str})
+        stock_st_status["code"] = stock_st_status["code"].str.split(".", n=1).str[0].str.zfill(6)
         stock_st_status["date"] = self._format_dates(stock_st_status["date"])
         stock_st_status_dir = Path(self.output_dir) / "stock_st_status"
         stock_st_status_dir.mkdir(parents=True, exist_ok=True)
         stock_st_status.to_parquet(stock_st_status_dir / "stock_st_status.parquet", index=False)
 
         mkcap = pd.read_csv(Path(self.new_data_dir) / "mkcap.csv", dtype={"code": str, "trading_day": str})
+        mkcap["code"] = mkcap["code"].str.split(".", n=1).str[0].str.zfill(6)
         mkcap = mkcap.rename(columns={"trading_day": "date", "total_value": "mkcap"})
         mkcap["date"] = self._format_dates(mkcap["date"])
         fundamentals_dir = Path(self.output_dir) / "fundamentals"
@@ -65,6 +73,26 @@ class DataUpdater:
         mkcap_monthly = mkcap_monthly.drop_duplicates(subset=["code", "date"], keep="last")
         mkcap_monthly.to_parquet(fundamentals_dir / "mkcap_monthly.parquet", index=False)
 
+    @staticmethod
+    def _prepare_daily_backtest_data(item):
+        trade_date, (source, member) = item
+        if member is None:
+            daily_minutes = pd.read_parquet(source)
+        else:
+            with ZipFile(source) as archive:
+                # Parquet 会随机读取；一次性解压，避免 ZIP 流回退时重复解压。
+                with BytesIO(archive.read(member)) as buffer:
+                    daily_minutes = pd.read_parquet(buffer)
+
+        daily_minutes["trade_time"] = pd.to_datetime(daily_minutes["trade_time"])
+        # 最低、最高收盘价相等即全天价格恒定，避免计算标准差及其浮点误差。
+        daily_close = daily_minutes.groupby("code", sort=False)["close"].agg(["min", "max"])
+        result = daily_minutes.loc[daily_minutes["trade_time"].eq(trade_date + pd.Timedelta(hours=10)) & daily_minutes["open"].ne(0)].copy()
+        result["is_constant_close"] = result["code"].map(daily_close["min"].eq(daily_close["max"]))
+        del daily_minutes, daily_close
+        gc.collect()
+        return result
+
     def generate_backtest_data(self):
         backtest_dir = Path(self.output_dir) / "backtest_data"
         backtest_dir.mkdir(parents=True, exist_ok=True)
@@ -72,16 +100,12 @@ class DataUpdater:
         start_date = pd.Timestamp(self.start_date).normalize()
         tables = []
         existing_dates = set()
-        needs_trim = False
 
-        # 读取已有结果，记录起始日期之后已覆盖的交易日（含起始日）。
-        if backtest_file.exists():
+        # 增量更新时读取已有结果；全量更新从起始日期重新计算。
+        if self.update_all != 1 and backtest_file.exists():
             existing_data = pd.read_parquet(backtest_file)
             existing_data["trade_time"] = pd.to_datetime(existing_data["trade_time"])
-            retained_rows = existing_data["trade_time"] >= start_date
-            needs_trim = not retained_rows.all()
-            if needs_trim:
-                existing_data = existing_data.loc[retained_rows]
+            existing_data = existing_data.loc[(existing_data["trade_time"] >= start_date) & existing_data["open"].ne(0)]
             existing_dates = set(existing_data["trade_time"].dt.normalize().drop_duplicates())
             tables.append(existing_data)
 
@@ -102,27 +126,24 @@ class DataUpdater:
             if trade_date >= start_date and trade_date not in existing_dates:
                 daily_sources[trade_date] = (daily_file, None)
 
-        # 没有待补日期且无需裁剪已有数据时，避免全量去重、排序和重写。
-        if tables and not daily_sources and not needs_trim:
+        # 增量更新没有待补日期时，避免重写。
+        if tables and not daily_sources:
             return
 
-        # 逐日提取恰好 10:00 的记录，保留全部数据列。
-        with ExitStack() as stack:
-            archive_paths = sorted({source for source, member in daily_sources.values() if member is not None})
-            archives = {archive: stack.enter_context(ZipFile(archive)) for archive in archive_paths}
-            for _, (source, member) in tqdm(sorted(daily_sources.items()), desc="Preparing 10am backtest data", unit="day"):
-                if member is None:
-                    daily_minutes = pd.read_parquet(source)
-                else:
-                    with archives[source].open(member) as parquet_file:
-                        daily_minutes = pd.read_parquet(parquet_file)
-
-                daily_minutes["trade_time"] = pd.to_datetime(daily_minutes["trade_time"])
-                time_of_day = daily_minutes["trade_time"] - daily_minutes["trade_time"].dt.normalize()
-                tables.append(daily_minutes.loc[time_of_day == pd.Timedelta(hours=10)])
+        # 逐日提取恰好 10:00 且开盘价不为 0 的记录，保留全部数据列。
+        if daily_sources:
+            with Pool(processes=self.processes) as pool:
+                results = pool.imap(self._prepare_daily_backtest_data, sorted(daily_sources.items()), chunksize=1)
+                tables.extend(tqdm(results, total=len(daily_sources), desc="Preparing 10am backtest data", unit="day"))
 
         # 合并新旧数据，按时间和股票代码去重、排序后保存。
         backtest_data = pd.concat(tables, ignore_index=True)
+        backtest_data["code"] = backtest_data["code"].astype(str).str.split(".", n=1).str[0].str.zfill(6)
         backtest_data = backtest_data.drop_duplicates(subset=["trade_time", "code"], keep="last")
         backtest_data = backtest_data.sort_values(["trade_time", "code"])
+
+        # 在过滤后的样本上按股票划分连续区间，日期间隔超过 15 个自然日时重新计数。
+        backtest_data["consecutive_trading_days"] = backtest_data.groupby("code")["trade_time"].diff().dt.days.gt(15)
+        backtest_data["consecutive_trading_days"] = backtest_data.groupby("code")["consecutive_trading_days"].cumsum()
+        backtest_data["consecutive_trading_days"] = backtest_data.groupby(["code", "consecutive_trading_days"]).cumcount() + 1
         backtest_data.to_parquet(backtest_file, index=False)

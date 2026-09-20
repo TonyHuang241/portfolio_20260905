@@ -23,6 +23,7 @@ class SingleFactorEvaluation:
         self.start_date = config["start_date"]
         self.update_all = config["update_all"]
         self.processes = config.get("processes", 4)
+        self.stock_pool = config["stock_pool"]
         self._clear_outputs = factor_data is None
 
         specified_column = config["specified_column"]
@@ -39,6 +40,15 @@ class SingleFactorEvaluation:
         self.factor["__factor"] = self.factor.groupby(["code"])["__factor"].shift(1)
 
         self.factor = self.factor.dropna(subset=["__factor"])
+        # 用上月末市值作为当月排序依据，在每日有效因子样本中选取小市值股票。
+        monthly_mkcap = pd.read_parquet(Path(config["stock_minutes_dir"]).parent / "fundamentals" / "mkcap_monthly.parquet", columns=["code", "date", "mkcap"])
+        monthly_mkcap = monthly_mkcap.rename(columns={"date": "month"})
+        self.factor["month"] = self.factor["date"].str[:6] + "01"
+        self.factor = self.factor.merge(monthly_mkcap, on=["code", "month"])
+        self.factor = self.factor.dropna(subset=["mkcap"])
+        self.factor = self.factor.sort_values("mkcap", kind="stable")
+        self.factor = self.factor.groupby("date", sort=False).head(self.stock_pool)
+        self.factor = self.factor.drop(columns=["month", "mkcap"])
         self.trade_dates = sorted(date for date in self.factor["date"].unique() if date >= self.start_date)
 
         self.output_dir = config["output_dir"]
