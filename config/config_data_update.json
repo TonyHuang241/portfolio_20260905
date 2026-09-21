@@ -1,7 +1,7 @@
 {
     "new_data_dir": "a_share_market_data/__daily_data_update/",
     "output_dir": "a_share_market_data/",
-    "start_date": "20180101",
+    "start_date": "20160101",
     "processes": 2,
-    "update_all": 0
+    "update_all": 1
 }

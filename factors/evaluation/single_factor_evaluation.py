@@ -24,6 +24,7 @@ class SingleFactorEvaluation:
         self.update_all = config["update_all"]
         self.processes = config.get("processes", 4)
         self.stock_pool = config["stock_pool"]
+        self.stock_info_path = Path(config["stock_minutes_dir"]).parent / "__daily_data_update" / "stock_info.csv"
         self._clear_outputs = factor_data is None
 
         specified_column = config["specified_column"]
@@ -37,23 +38,50 @@ class SingleFactorEvaluation:
 
         self.factor_name = factor.columns[-1]
         self.factor = factor.rename(columns={self.factor_name: "__factor"})
+        # 保留最新收盘因子，供下一交易日选股；历史持仓仍使用滞后一期的因子。
+        self.next_factor = self.factor.loc[self.factor["date"].eq(self.factor["date"].max())].copy()
         self.factor["__factor"] = self.factor.groupby(["code"])["__factor"].shift(1)
 
-        self.factor = self.factor.dropna(subset=["__factor"])
         # 用上月末市值作为当月排序依据，在每日有效因子样本中选取小市值股票。
         monthly_mkcap = pd.read_parquet(Path(config["stock_minutes_dir"]).parent / "fundamentals" / "mkcap_monthly.parquet", columns=["code", "date", "mkcap"])
         monthly_mkcap = monthly_mkcap.rename(columns={"date": "month"})
-        self.factor["month"] = self.factor["date"].str[:6] + "01"
-        self.factor = self.factor.merge(monthly_mkcap, on=["code", "month"])
-        self.factor = self.factor.dropna(subset=["mkcap"])
-        self.factor = self.factor.sort_values("mkcap", kind="stable")
-        self.factor = self.factor.groupby("date", sort=False).head(self.stock_pool)
-        self.factor = self.factor.drop(columns=["month", "mkcap"])
+        self.factor = self._select_stock_pool(self.factor, monthly_mkcap)
+        self.next_factor = self._select_stock_pool(self.next_factor, monthly_mkcap)
         self.trade_dates = sorted(date for date in self.factor["date"].unique() if date >= self.start_date)
 
         self.output_dir = config["output_dir"]
         self.visualization_output_dir = config.get("visualization_output_dir")
         os.makedirs(self.output_dir, exist_ok=True)
+
+    def _select_stock_pool(self, factor, monthly_mkcap):
+        """按因子所标日期的月份，在有效样本中筛选小市值股票。"""
+        factor = factor.dropna(subset=["__factor"]).copy()
+        factor["month"] = factor["date"].str[:6] + "01"
+        factor = factor.merge(monthly_mkcap, on=["code", "month"])
+        factor = factor.dropna(subset=["mkcap"])
+        factor = factor.sort_values("mkcap", kind="stable")
+        factor = factor.groupby("date", sort=False).head(self.stock_pool)
+        return factor.drop(columns=["month", "mkcap"])
+
+    def _save_stock_list(self, preferred_group):
+        """保存历史（含最新交易日）多头持仓，以及最新收盘信号的下一日目标。"""
+        stock_info = pd.read_csv(self.stock_info_path, dtype=str)
+        stock_info["code"] = stock_info["code"].str.split(".", n=1).str[0].str.zfill(6)
+        output_dir = Path(self.output_dir).parent / "stock_list"
+        for factor, directory, date_column in (
+            (self.factor, output_dir, "date"),
+            (self.next_factor, output_dir / "next_day", "signal_date"),
+        ):
+            records = []
+            for date, daily_factor in factor.loc[factor["date"] >= self.start_date].groupby("date"):
+                _, groups, _ = self._evaluate_date((date, daily_factor, None, None))
+                holdings = daily_factor.loc[daily_factor["code"].isin(groups[int(preferred_group[-1]) - 1])]
+                holdings = holdings.sort_values("code")
+                records.extend((date, code, preferred_group, value) for code, value in holdings[["code", "__factor"]].itertuples(index=False, name=None))
+            directory.mkdir(parents=True, exist_ok=True)
+            stock_list = pd.DataFrame(records, columns=[date_column, "code", "group", "factor_value"])
+            stock_list = stock_list.merge(stock_info, on="code", how="left", validate="many_to_one")
+            stock_list.to_csv(directory / f"{self.factor_name}.csv", index=False, encoding="utf-8-sig")
 
     @staticmethod
     def load_prices(backtest_data_dir):
@@ -142,6 +170,7 @@ class SingleFactorEvaluation:
         evaluation = evaluation[~evaluation.index.duplicated(keep="last")].sort_index()
         evaluation.to_csv(output_path)
         visualizer = ResultsVisualizer(evaluation, self.factor_name, self.start_date, self.visualization_output_dir)
+        self._save_stock_list(visualizer.preferred_group)
         visualizer.plot_results_html()
         return visualizer.summary()
 

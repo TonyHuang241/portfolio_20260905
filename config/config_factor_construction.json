@@ -8,11 +8,12 @@
     "factor_calc_dir": "portfolio_20260905/factors/construction/factor_calculation/",
     "factor_list": [
         "MorningMomentum",
-        "AfternoonMomentum"
+        "AfternoonMomentum",
+        "MinuteAmihudIlliquidity"
     ],
 
     "processes": 2,
-    "start_date": "20200101",
-    "end_date": "20260914",
+    "start_date": "2026001",
+    "end_date": "20260918",
     "update_all": 1
 }
