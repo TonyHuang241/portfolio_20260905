@@ -86,7 +86,11 @@ class DataUpdater:
 
         daily_minutes["trade_time"] = pd.to_datetime(daily_minutes["trade_time"])
         daily_minutes = daily_minutes.sort_values("trade_time", kind="stable")
-        daily_stock = daily_minutes.groupby("code", sort=False, as_index=False).agg(open=("open", "first"), high=("high", "max"), low=("low", "min"), close=("close", "last"))
+        daily_stock = daily_minutes.groupby("code", sort=False, as_index=False).agg(
+            open=("open", "first"), high=("high", "max"), low=("low", "min"), close=("close", "last"),
+            volume=("volume" if "volume" in daily_minutes.columns else "vol", "sum"),
+            money=("money" if "money" in daily_minutes.columns else "amount", "sum"),
+        )
         daily_stock.insert(0, "date", trade_date.strftime("%Y%m%d"))
         # 最低、最高收盘价相等即全天价格恒定，避免计算标准差及其浮点误差。
         daily_close = daily_minutes.groupby("code", sort=False)["close"].agg(["min", "max"])
