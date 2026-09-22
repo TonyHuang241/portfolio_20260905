@@ -85,20 +85,25 @@ class DataUpdater:
                     daily_minutes = pd.read_parquet(buffer)
 
         daily_minutes["trade_time"] = pd.to_datetime(daily_minutes["trade_time"])
+        daily_minutes = daily_minutes.sort_values("trade_time", kind="stable")
+        daily_stock = daily_minutes.groupby("code", sort=False, as_index=False).agg(open=("open", "first"), high=("high", "max"), low=("low", "min"), close=("close", "last"))
+        daily_stock.insert(0, "date", trade_date.strftime("%Y%m%d"))
         # 最低、最高收盘价相等即全天价格恒定，避免计算标准差及其浮点误差。
         daily_close = daily_minutes.groupby("code", sort=False)["close"].agg(["min", "max"])
         result = daily_minutes.loc[daily_minutes["trade_time"].eq(trade_date + pd.Timedelta(hours=10)) & daily_minutes["open"].ne(0)].copy()
         result["is_constant_close"] = result["code"].map(daily_close["min"].eq(daily_close["max"]))
         del daily_minutes, daily_close
         gc.collect()
-        return result
+        return result, daily_stock
 
     def generate_backtest_data(self):
-        backtest_dir = Path(self.output_dir) / "backtest_data"
+        backtest_dir = Path(self.output_dir) / "stock_daily"
         backtest_dir.mkdir(parents=True, exist_ok=True)
-        backtest_file = backtest_dir / "backtest10am.parquet"
+        backtest_file = backtest_dir / "daily_stock_data_10am.parquet"
+        daily_stock_file = backtest_dir / "daily_stock_data.parquet"
         start_date = pd.Timestamp(self.start_date).normalize()
         tables = []
+        daily_tables = []
         existing_dates = set()
 
         # 增量更新时读取已有结果；全量更新从起始日期重新计算。
@@ -109,7 +114,15 @@ class DataUpdater:
             existing_dates = set(existing_data["trade_time"].dt.normalize().drop_duplicates())
             tables.append(existing_data)
 
-        # 从 ZIP 和普通文件夹中收集缺失日期，普通文件优先使用。
+        if self.update_all != 1 and daily_stock_file.exists():
+            existing_daily = pd.read_parquet(daily_stock_file)
+            existing_daily = existing_daily.loc[existing_daily["date"] >= start_date.strftime("%Y%m%d")]
+            existing_dates &= set(pd.to_datetime(existing_daily["date"].drop_duplicates(), format="%Y%m%d"))
+            daily_tables.append(existing_daily)
+        else:
+            existing_dates.clear()
+
+        # 两个结果均已有的日期才跳过；从 ZIP 和普通文件夹中收集缺失日期，普通文件优先使用。
         minutes_dir = Path(self.output_dir) / "stock_minutes"
         daily_sources = {}
         for archive in sorted(minutes_dir.glob("*.zip")):
@@ -127,14 +140,16 @@ class DataUpdater:
                 daily_sources[trade_date] = (daily_file, None)
 
         # 增量更新没有待补日期时，避免重写。
-        if tables and not daily_sources:
+        if tables and daily_tables and not daily_sources:
             return
 
-        # 逐日提取恰好 10:00 且开盘价不为 0 的记录，保留全部数据列。
+        # 同时生成日频 OHLC 和恰好 10:00 且开盘价不为 0 的回测记录。
         if daily_sources:
             with Pool(processes=self.processes) as pool:
                 results = pool.imap(self._prepare_daily_backtest_data, sorted(daily_sources.items()), chunksize=1)
-                tables.extend(tqdm(results, total=len(daily_sources), desc="Preparing 10am backtest data", unit="day"))
+                for backtest, daily_stock in tqdm(results, total=len(daily_sources), desc="Preparing backtest data", unit="day"):
+                    tables.append(backtest)
+                    daily_tables.append(daily_stock)
 
         # 合并新旧数据，按时间和股票代码去重、排序后保存。
         backtest_data = pd.concat(tables, ignore_index=True)
@@ -147,3 +162,9 @@ class DataUpdater:
         backtest_data["consecutive_trading_days"] = backtest_data.groupby("code")["consecutive_trading_days"].cumsum()
         backtest_data["consecutive_trading_days"] = backtest_data.groupby(["code", "consecutive_trading_days"]).cumcount() + 1
         backtest_data.to_parquet(backtest_file, index=False)
+
+        daily_stock_data = pd.concat(daily_tables, ignore_index=True)
+        daily_stock_data["code"] = daily_stock_data["code"].astype(str).str.split(".", n=1).str[0].str.zfill(6)
+        daily_stock_data = daily_stock_data.drop_duplicates(subset=["date", "code"], keep="last")
+        daily_stock_data = daily_stock_data.sort_values(["date", "code"])
+        daily_stock_data.to_parquet(daily_stock_file, index=False)

@@ -31,7 +31,7 @@ python main.py
 
 首次使用按数据更新、因子构建、因子评估的顺序执行；已有对应数据时可直接运行后续步骤。行情数据需自行准备，不包含在仓库中。
 
-- **数据更新**：从 `new_data_dir` 读取 `daily_minutes.csv`、`stock_exrights.csv`、`limit_price.csv`、`stock_st_status.csv` 和 `mkcap.csv`，整理数据并生成 `backtest_data/backtest10am.parquet`。
+- **数据更新**：从 `new_data_dir` 读取 `daily_minutes.csv`、`stock_exrights.csv`、`limit_price.csv`、`stock_st_status.csv` 和 `mkcap.csv`，整理数据并生成 `stock_daily/daily_stock_data_10am.parquet`（10 点行情）和 `stock_daily/daily_stock_data.parquet`（日频 OHLC）。
 - **因子构建**：通过 `factor_list` 选择因子，空列表表示全部；可设置日期范围和 `processes` 并行进程数。结果保存到配置的 `output_dir`。
 - **因子评估**：`evaluation_mode` 为 `multi` 时遍历因子目录中的全部因子列；为 `single` 时需将 `specified_column` 设为待评估的因子列名。输出包含分组收益、IC、Rank IC 等指标及 HTML 报告，批量模式额外生成 `factor_comparison.csv`。
 

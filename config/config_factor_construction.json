@@ -1,7 +1,7 @@
 {
     "stock_minutes_dir": "a_share_market_data/stock_minutes/",
     "stock_st_status_dir": "a_share_market_data/stock_st_status/",
-    "backtest_data_path": "a_share_market_data/backtest_data/backtest10am.parquet",
+    "backtest_data_path": "a_share_market_data/stock_daily/daily_stock_data_10am.parquet",
     "fundamentals_dir": "a_share_market_data/fundamentals/",
     "adj_factor_dir": "a_share_market_data/adj_factor/",
     "output_dir": "a_share_market_data/factors/",

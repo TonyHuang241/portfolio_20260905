@@ -1,6 +1,6 @@
 {
     "stock_minutes_dir": "a_share_market_data/stock_minutes/",
-    "backtest_data_dir": "a_share_market_data/backtest_data/backtest10am.parquet",
+    "backtest_data_dir": "a_share_market_data/stock_daily/daily_stock_data_10am.parquet",
     "output_dir": "a_share_market_data/factors_evaluation_output/numerical_output/",
     "visualization_output_dir": "a_share_market_data/factors_evaluation_output/visualization_output/",
 
