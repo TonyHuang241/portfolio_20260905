@@ -1,5 +1,4 @@
 import os
-import shutil
 from io import BytesIO
 from importlib import import_module
 from multiprocessing import Pool
@@ -13,11 +12,11 @@ from tqdm import tqdm
 class HighFreqFactorConstructor:
     def __init__(self, config):
         self.stock_minutes_dir = config["stock_minutes_dir"]
+        self.stock_daily_dir = config["stock_daily_dir"]
         self.stock_st_status_dir = config["stock_st_status_dir"]
-        self.backtest_data_path = config["backtest_data_path"]
         self.adj_factor_dir = config["adj_factor_dir"]
         self.output_dir = config["output_dir"]
-        self.factor_calc_dir = config["factor_calc_dir"]
+        self.high_factor_calc_dir = config["high_factor_calc_dir"]
 
         self.start_date = config["start_date"]
         self.end_date = config["end_date"]
@@ -30,23 +29,9 @@ class HighFreqFactorConstructor:
         pass
 
     def _update_trade_date(self):
-        """获取分钟数据中存在的全部交易日期"""
-        trade_dates = set()
-        for year_entry in os.listdir(self.stock_minutes_dir):
-            year_path = os.path.join(self.stock_minutes_dir, year_entry)
-            if os.path.isdir(year_path):
-                file_names = os.listdir(year_path)
-            elif year_entry.endswith(".zip"):
-                with ZipFile(year_path) as archive:
-                    file_names = archive.namelist()
-            else:
-                continue
-
-            for file_name in file_names:
-                trade_date, extension = os.path.splitext(os.path.basename(file_name))
-                if extension == ".parquet" and len(trade_date) == 8 and trade_date.isdigit():
-                    trade_dates.add(trade_date)
-
+        """获取日频数据中存在的全部交易日期。"""
+        trade_dates = pd.read_parquet(os.path.join(self.stock_daily_dir, "daily_stock_data.parquet"), columns=["date"])["date"]
+        trade_dates = trade_dates.drop_duplicates()
         self.trade_date = sorted(trade_dates)
 
     def _regist_factors(self, factor_list=None):
@@ -56,8 +41,8 @@ class HighFreqFactorConstructor:
             return
 
         self.factors = [
-            file[:-3] for file in sorted(os.listdir(self.factor_calc_dir))
-            if not file.startswith("_") and file.endswith(".py") and os.path.isfile(os.path.join(self.factor_calc_dir, file))
+            file[:-3] for file in sorted(os.listdir(self.high_factor_calc_dir))
+            if not file.startswith("_") and file.endswith(".py") and os.path.isfile(os.path.join(self.high_factor_calc_dir, file))
         ]
 
     @staticmethod
@@ -95,17 +80,22 @@ class HighFreqFactorConstructor:
 
         results = {}
         for factor_name in factor_names:
-            module = import_module(f"factors.construction.factor_calculation.{factor_name}")
+            module = import_module(f"factors.construction.high_freq_factor_calculation.{factor_name}")
             factor = getattr(module, factor_name)(minutes=minutes)
             results[factor_name] = factor.calculate()
         return trade_date, results
 
     def _select_stock_codes(self, trade_dates):
-        """生成每日股票池：主板、非 ST、连续交易至少 250 天、全天收盘价非恒定。"""
-        stock_pool = pd.read_parquet(self.backtest_data_path, columns=["code", "trade_time", "consecutive_trading_days", "is_constant_close"])
+        """基于日频数据生成每日股票池：主板、非 ST、连续交易至少 250 天。"""
+        stock_pool = pd.read_parquet(os.path.join(self.stock_daily_dir, "daily_stock_data.parquet"), columns=["code", "date", "open"])
         stock_pool = stock_pool.loc[stock_pool["code"].str.startswith(("000", "001", "002", "003", "600", "601", "603", "605"))]
-        stock_pool["date"] = pd.to_datetime(stock_pool["trade_time"]).dt.strftime("%Y%m%d")
-        stock_pool = stock_pool.loc[stock_pool["is_constant_close"].eq(False)]
+        stock_pool = stock_pool.loc[stock_pool["open"].ne(0)].copy()
+        stock_pool = stock_pool.sort_values(["code", "date"])
+        stock_pool["trade_time"] = pd.to_datetime(stock_pool["date"], format="%Y%m%d")
+        # 使用完整历史计数；相邻记录间隔超过 15 个自然日时重新计数。
+        stock_pool["consecutive_trading_days"] = stock_pool.groupby("code")["trade_time"].diff().dt.days.gt(15)
+        stock_pool["consecutive_trading_days"] = stock_pool.groupby("code")["consecutive_trading_days"].cumsum()
+        stock_pool["consecutive_trading_days"] = stock_pool.groupby(["code", "consecutive_trading_days"]).cumcount() + 1
         stock_pool = stock_pool.loc[stock_pool["date"].isin(trade_dates) & stock_pool["consecutive_trading_days"].ge(250), ["date", "code"]]
 
         stock_st_status = pd.read_parquet(os.path.join(self.stock_st_status_dir, "stock_st_status.parquet"), columns=["code", "date", "is_st"])
@@ -114,10 +104,6 @@ class HighFreqFactorConstructor:
 
     def update_factors(self):
         """逐日更新因子数据。"""
-        if self.update_all == 1:
-            shutil.rmtree(self.output_dir, ignore_errors=True)
-            os.makedirs(self.output_dir, exist_ok=True)
-
         trade_dates = sorted(date for date in self.trade_date if self.start_date <= date <= self.end_date)
         factor_data = {}
         exist_dates = {}
@@ -169,7 +155,7 @@ class HighFreqFactorConstructor:
             factor = factor.drop_duplicates(["code", "date"], keep="last")
             factor = factor.sort_values(["code", "date"]).reset_index(drop=True)
             factor_by_code = factor.groupby("code")[factor_name]
-            for window in (20, 60, 120, 180, 250):
+            for window in (5, 20, 60, 120, 250):
                 rolling = factor_by_code.rolling(window)
                 factor[f"{factor_name}_{window}_m"] = rolling.mean().droplevel(0).reindex(factor.index)
                 # factor[f"{factor_name}_{window}_std"] = rolling.std().droplevel(0).reindex(factor.index)

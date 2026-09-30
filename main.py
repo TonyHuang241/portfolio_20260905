@@ -4,7 +4,7 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
-CONFIG_FILE = "portfolio_20260905/config/config_factor_construction.json"
+CONFIG_FILE = "portfolio_20260905/config/config_factor_evaluation.json"
 CONFIG_LOCAL_FILE = Path(__file__).resolve().parent / "config_local.json"
 
 def load_config(config_file=CONFIG_FILE):
@@ -23,6 +23,7 @@ def load_config(config_file=CONFIG_FILE):
 if __name__ == "__main__":
     from update_data.update_data import DataUpdater
     from factors.construction.high_freq_factor_construction import HighFreqFactorConstructor
+    from factors.construction.middle_freq_factor_construction import MiddleFreqFactorConstructor
     from factors.evaluation.single_factor_evaluation import SingleFactorEvaluation
     from factors.evaluation.multi_factor_evaluation import MultiFactorEvaluation
 
@@ -36,7 +37,8 @@ if __name__ == "__main__":
         data_updater.generate_backtest_data()
 
     if config_name == "config_factor_construction.json":
-        data_constructor = HighFreqFactorConstructor(config)
+        constructor_class = {"high": HighFreqFactorConstructor, "middle": MiddleFreqFactorConstructor}[config.get("construction_mode", "high")]
+        data_constructor = constructor_class(config)
         data_constructor.update_factors()
 
     if config_name == "config_factor_evaluation.json":

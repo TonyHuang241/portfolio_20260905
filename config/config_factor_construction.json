@@ -1,19 +1,28 @@
 {
+    "construction_mode": "middle",
+    "seperator1": "-----------------------config for high freq factors---------------------",
     "stock_minutes_dir": "a_share_market_data/stock_minutes/",
-    "stock_st_status_dir": "a_share_market_data/stock_st_status/",
-    "backtest_data_path": "a_share_market_data/stock_daily/daily_stock_data_10am.parquet",
-    "fundamentals_dir": "a_share_market_data/fundamentals/",
-    "adj_factor_dir": "a_share_market_data/adj_factor/",
-    "output_dir": "a_share_market_data/factors/",
-    "factor_calc_dir": "portfolio_20260905/factors/construction/factor_calculation/",
+
+    "high_factor_calc_dir": "portfolio_20260905/factors/construction/high_freq_factor_calculation/",
     "factor_list": [
         "MorningMomentum",
         "AfternoonMomentum",
         "MinuteAmihudIlliquidity"
     ],
 
-    "processes": 2,
-    "start_date": "2026001",
+    "seperator2": "-----------------------config for middle freq factors---------------------",
+    "middle_factor_calc_dir": "portfolio_20260905/factors/construction/middle_freq_factor_calculation/",
+    "middle_factor_list": ["Mom1m"],
+    
+    "seperator3": "-----------------------config for all factors---------------------",
+    "stock_daily_dir": "a_share_market_data/stock_daily/",
+    "stock_st_status_dir": "a_share_market_data/stock_st_status/",
+    "fundamentals_dir": "a_share_market_data/fundamentals/",
+    "adj_factor_dir": "a_share_market_data/adj_factor/",
+    "output_dir": "a_share_market_data/factors/",
+    
+    "processes": 1,
+    "start_date": "20250101",
     "end_date": "20260918",
     "update_all": 1
 }

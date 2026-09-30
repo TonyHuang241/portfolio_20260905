@@ -100,6 +100,20 @@ class DataUpdater:
         gc.collect()
         return result, daily_stock
 
+    @staticmethod
+    def _adjust_prices(data, exrights, date_column):
+        """按当日已生效的累计系数后复权：价格 × a + b，保留零价格标记。"""
+        data = data.copy()
+        data["code"] = data["code"].astype(str).str.split(".", n=1).str[0].str.zfill(6)
+        data["__adj_date"] = pd.to_datetime(data[date_column]).dt.normalize()
+        data = data.sort_values("__adj_date")
+        data = pd.merge_asof(data, exrights, on="__adj_date", by="code", direction="backward")
+        data["exer_backward_a"] = data["exer_backward_a"].fillna(1)
+        data["exer_backward_b"] = data["exer_backward_b"].fillna(0)
+        for column in data.columns.intersection(["open", "high", "low", "close", "pre_close", "price"]):
+            data[column] = (data[column] * data["exer_backward_a"] + data["exer_backward_b"]).where(data[column].ne(0), 0)
+        return data.drop(columns=["__adj_date", "exer_backward_a", "exer_backward_b"])
+
     def generate_backtest_data(self):
         backtest_dir = Path(self.output_dir) / "stock_daily"
         backtest_dir.mkdir(parents=True, exist_ok=True)
@@ -149,11 +163,16 @@ class DataUpdater:
 
         # 同时生成日频 OHLC 和恰好 10:00 且开盘价不为 0 的回测记录。
         if daily_sources:
+            exrights = pd.read_csv(Path(self.output_dir) / "adj_factors" / "stock_exrights.csv", usecols=["date", "code", "exer_backward_a", "exer_backward_b"], dtype={"date": str, "code": str})
+            exrights["code"] = exrights["code"].str.split(".", n=1).str[0].str.zfill(6)
+            exrights["date"] = pd.to_datetime(exrights["date"])
+            exrights = exrights.rename(columns={"date": "__adj_date"})
+            exrights = exrights.sort_values("__adj_date")
             with Pool(processes=self.processes) as pool:
                 results = pool.imap(self._prepare_daily_backtest_data, sorted(daily_sources.items()), chunksize=1)
                 for backtest, daily_stock in tqdm(results, total=len(daily_sources), desc="Preparing backtest data", unit="day"):
-                    tables.append(backtest)
-                    daily_tables.append(daily_stock)
+                    tables.append(self._adjust_prices(backtest, exrights, "trade_time"))
+                    daily_tables.append(self._adjust_prices(daily_stock, exrights, "date"))
 
         # 合并新旧数据，按时间和股票代码去重、排序后保存。
         backtest_data = pd.concat(tables, ignore_index=True)
