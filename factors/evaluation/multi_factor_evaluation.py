@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 
-from factors.evaluation.single_factor_evaluation import SingleFactorEvaluation, _clear_existing_results
+from factors.evaluation.single_factor_evaluation_v1 import SingleFactorEvaluation, _clear_existing_results
 
 
 class MultiFactorEvaluation:

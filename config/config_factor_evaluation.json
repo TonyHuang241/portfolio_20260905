@@ -9,7 +9,8 @@
     
     "specified_column": "",
     "start_date": "20210101",
-    "stock_pool": 500,
-    "processes": 16,
+    "stock_pool": 2000,
+    "group_number": 10,
+    "processes": 24,
     "update_all": 1
 }

@@ -16,8 +16,9 @@ import pandas as pd
 
 
 class ResultsVisualizer:
-    GROUPS = [f"group_{group}" for group in range(1, 6)]
     COLORS = ["#2563eb", "#06a6a0", "#e7a32e", "#9764d9", "#ed6976"]
+    # 超过五组时用蓝红分歧色：G1–G5 蓝色由深到浅，G6–G10 红色由浅到深，两端（多空组）颜色最深。
+    DIVERGING_COLORS = ["#104281", "#1c5cab", "#2a78d6", "#5598e7", "#86b6ef", "#ea9a93", "#dd716a", "#c74845", "#9e3432", "#762221"]
 
     @staticmethod
     def _default_output_dir():
@@ -46,6 +47,10 @@ class ResultsVisualizer:
         # Casting integer YYYYMMDD dates to strings avoids nanosecond timestamps.
         data.index = pd.to_datetime(data.index.astype(str))
         data = data.sort_index()
+        # 分组数由结果中的 group_N 列确定，五组和十组的评估结果都可以直接生成报告。
+        group_number = len([column for column in data.columns if column.startswith("group_") and column[6:].isdigit()])
+        self.GROUPS = [f"group_{group}" for group in range(1, group_number + 1)]
+        self.group_colors = self.COLORS if group_number <= len(self.COLORS) else self.DIVERGING_COLORS
         if data.index.has_duplicates or data.index.hasnans:
             raise ValueError("Evaluation dates must be unique and non-null.")
         count_columns = [f"{group}_count" for group in self.GROUPS]
@@ -69,8 +74,8 @@ class ResultsVisualizer:
         if self.group_returns.empty:
             raise ValueError("No dates with valid returns for all five groups.")
         self.ic_mean = data["IC"].mean()
-        self.preferred_group = "group_5" if self.ic_mean > 0 else "group_1"
-        self.short_group = "group_1" if self.ic_mean > 0 else "group_5"
+        self.preferred_group = self.GROUPS[-1] if self.ic_mean > 0 else self.GROUPS[0]
+        self.short_group = self.GROUPS[0] if self.ic_mean > 0 else self.GROUPS[-1]
         self.long_short = self.group_returns[self.preferred_group] - self.group_returns[self.short_group]
         if (self.long_short < -1).any():
             raise ValueError("Long-short daily loss exceeds 100%; compounded NAV is undefined for this report.")
@@ -157,7 +162,7 @@ class ResultsVisualizer:
         annual_returns = [self._performance(self.group_returns[group])[2] for group in self.GROUPS]
         figure = Figure(figsize=(12, 3.8), layout="constrained", facecolor="white")
         axis = figure.subplots()
-        bars = axis.bar([f"G{group[-1]}" for group in self.GROUPS], annual_returns, color=self.COLORS, width=0.55, zorder=3)
+        bars = axis.bar([f"G{group.split('_')[1]}" for group in self.GROUPS], annual_returns, color=self.group_colors, width=0.55, zorder=3)
         axis.bar_label(bars, labels=[self._format(value, percent=True) for value in annual_returns], padding=5, fontsize=10, color="#172b4d")
         axis.axhline(0, color="#94a3b8", linewidth=0.8)
         axis.set_ylabel("Annualized return", color="#64748b", fontsize=10)
@@ -179,8 +184,8 @@ class ResultsVisualizer:
 class FactorReport {
     constructor(data) {
         this.data = data;
-        this.colors = ['#2563eb', '#06a6a0', '#e7a32e', '#9764d9', '#ed6976'];
-        this.names = ['G1', 'G2', 'G3', 'G4', 'G5'];
+        this.colors = data.colors;
+        this.names = data.names;
         this.start = document.getElementById('range-start');
         this.end = document.getElementById('range-end');
         this.pan = document.getElementById('range-pan');
@@ -247,7 +252,7 @@ class FactorReport {
 
     direction(rows) {
         const mean = this.mean(rows.map(row => row.IC));
-        return Number.isFinite(mean) ? (mean > 0 ? 4 : 0) : null;
+        return Number.isFinite(mean) ? (mean > 0 ? this.names.length - 1 : 0) : null;
     }
 
     performance(returns) {
@@ -321,6 +326,9 @@ class FactorReport {
         const left = 100, top = 48, width = 990, height = 260;
         const x = index => left + (bars ? (index + 0.5) / labels.length : index / Math.max(labels.length - 1, 1)) * width;
         const y = value => top + (high - value) / (high - low) * height;
+        // 组数较多时收窄柱宽和图例间距，避免柱子相连、图例超出画布。
+        const barWidth = Math.min(96, width / labels.length * 0.6);
+        const legendGap = Math.min(150, width / series.length);
         let svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 365" role="img" aria-label="' + container.dataset.label + '">';
         for (let index = 0; index <= 4; index++) {
             const value = low + (high - low) * index / 4;
@@ -338,7 +346,7 @@ class FactorReport {
             if (bars) {
                 item.values.forEach((value, index) => {
                     if (!Number.isFinite(value)) return;
-                    svg += `<rect x="${x(index) - 48}" y="${Math.min(y(0), y(value))}" width="96" height="${Math.abs(y(value) - y(0))}" fill="${this.colors[index]}"><title>${labels[index]}: ${this.format(value, percent)}</title></rect>`;
+                    svg += `<rect x="${x(index) - barWidth / 2}" y="${Math.min(y(0), y(value))}" width="${barWidth}" height="${Math.abs(y(value) - y(0))}" fill="${this.colors[index % this.colors.length]}"><title>${labels[index]}: ${this.format(value, percent)}</title></rect>`;
                     svg += `<text x="${x(index)}" y="${value >= 0 ? y(value) - 9 : y(value) + 18}" text-anchor="middle">${this.format(value, percent)}</text>`;
                 });
             } else {
@@ -350,8 +358,8 @@ class FactorReport {
                     move = false;
                 });
                 svg += `<path d="${path}" fill="none" stroke="${color}" stroke-width="1.8"><title>${item.name}</title></path>`;
-                svg += `<line x1="${left + seriesIndex * 150}" x2="${left + 22 + seriesIndex * 150}" y1="22" y2="22" stroke="${color}" stroke-width="3"/>`;
-                svg += `<text x="${left + 30 + seriesIndex * 150}" y="26">${item.name}</text>`;
+                svg += `<line x1="${left + seriesIndex * legendGap}" x2="${left + 22 + seriesIndex * legendGap}" y1="22" y2="22" stroke="${color}" stroke-width="3"/>`;
+                svg += `<text x="${left + 30 + seriesIndex * legendGap}" y="26">${item.name}</text>`;
             }
         });
         container.innerHTML = svg + '</svg>';
@@ -363,7 +371,7 @@ class FactorReport {
         this.selected = this.data.rows.slice(start, end + 1);
         const rows = this.complete(this.selected);
         const preferred = this.direction(this.selected);
-        const short = preferred === null ? null : 4 - preferred;
+        const short = preferred === null ? null : this.names.length - 1 - preferred;
         const groups = this.names.map((_, index) => rows.map(row => row['group_' + (index + 1)]));
         const performances = groups.map(returns => this.performance(returns));
         const spread = preferred === null ? [] : groups[preferred].map((value, index) => value - groups[short][index]);
@@ -408,7 +416,7 @@ class FactorReport {
         const container = document.getElementById('yearly-curves');
         for (const [year, rows] of byYear) {
             const heading = document.createElement('h3');
-            heading.textContent = year + ' · 五组累计收益';
+            heading.textContent = year + ' · 各组累计收益';
             const chart = document.createElement('div');
             chart.id = 'year-' + year;
             chart.dataset.label = heading.textContent;
@@ -433,7 +441,8 @@ new FactorReport(JSON.parse(document.getElementById('report-data').textContent))
         payload = data.reindex(columns=columns).copy()
         payload.insert(0, "date", data.index.strftime("%Y-%m-%d"))
         report_data = json.dumps({"rows": json.loads(payload.to_json(orient="records", double_precision=15)),
-                                  "periods": self.periods_per_year, "riskFree": self.risk_free_rate}, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c")
+                                  "periods": self.periods_per_year, "riskFree": self.risk_free_rate,
+                                  "colors": self.group_colors, "names": [f"G{group}" for group in range(1, len(self.GROUPS) + 1)]}, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c")
         cards = "".join(f'<div class="stat"><span>{label}</span><strong id="card-{index}">—</strong></div>'
                         for index, label in enumerate(["IC 均值", "RankIC 均值", "ICIR", "多头 Sharpe"]))
         title = escape(self.factor_name)
@@ -477,10 +486,10 @@ footer {{ padding: 4px 12px 20px; }} @media(max-width: 700px) {{ main {{ padding
 <div class="range-control"><label for="range-end">结束日期 <output id="end-date" for="range-end"></output></label><input id="range-end" type="range" min="0" value="0" step="1"></div>
 <div class="range-control"><label for="range-pan">平移整个时间窗口</label><input id="range-pan" type="range" min="0" value="0" step="1"></div>
 <button id="range-reset">恢复完整区间</button><p>拖动滑块立即重算本页指标与曲线；平移窗口保持评估日数不变。IC 分析与分年收益页始终使用完整展示区间。</p></section>
-<section><h2>分组绩效</h2><p id="direction-note"></p><p>G1 为因子值最低组，G5 为最高组。各组与多空组合使用相同的完整收益日；股票数量与换手率按这些日期取均值，缺失值不参与均值。多空股票数量为两端之和，不展示多空换手率。</p><div id="group-table" class="content"></div></section>
-<section><h2>五组累计收益和动态回撤</h2><p>按日复利累计；所选区间起点收益为 0、净值为 1。动态回撤 = 当前净值 / 区间内历史最高净值 − 1，包含初始净值。</p>
-<h3>五组累计收益</h3><div id="group-cumulative" class="content" data-label="五组累计收益"></div><h3>五组动态回撤</h3><div id="group-drawdown" class="content" data-label="五组动态回撤"></div></section>
-<section><h2>五组年化收益 · 单调性</h2><p>按因子值从低到高排列 G1 → G5。年化收益按所选区间的有效收益日数折算；正向因子观察是否递增，负向因子观察是否递减。</p><div id="annual-returns" class="content" data-label="五组年化收益"></div></section>
+<section><h2>分组绩效</h2><p id="direction-note"></p><p>G1 为因子值最低组，G{len(self.GROUPS)} 为最高组。各组与多空组合使用相同的完整收益日；股票数量与换手率按这些日期取均值，缺失值不参与均值。多空股票数量为两端之和，不展示多空换手率。</p><div id="group-table" class="content"></div></section>
+<section><h2>各组累计收益和动态回撤</h2><p>按日复利累计；所选区间起点收益为 0、净值为 1。动态回撤 = 当前净值 / 区间内历史最高净值 − 1，包含初始净值。</p>
+<h3>各组累计收益</h3><div id="group-cumulative" class="content" data-label="各组累计收益"></div><h3>各组动态回撤</h3><div id="group-drawdown" class="content" data-label="各组动态回撤"></div></section>
+<section><h2>各组年化收益 · 单调性</h2><p>按因子值从低到高排列 G1 → G{len(self.GROUPS)}。年化收益按所选区间的有效收益日数折算；正向因子观察是否递增，负向因子观察是否递减。</p><div id="annual-returns" class="content" data-label="各组年化收益"></div></section>
 <section><h2>Long-short 累计收益和动态回撤</h2><p>每日多头收益减空头收益，再复利累计；累计收益与回撤均在所选区间起点重置。</p><h3>Long-short 累计收益</h3><div id="ls-cumulative" class="content" data-label="Long-short 累计收益"></div><h3>Long-short 动态回撤</h3><div id="ls-drawdown" class="content" data-label="Long-short 动态回撤"></div></section>
 </div>
 <div id="page-ic" role="tabpanel" aria-labelledby="tab-ic" hidden>
@@ -489,15 +498,15 @@ footer {{ padding: 4px 12px 20px; }} @media(max-width: 700px) {{ main {{ padding
 <section><h2>累积 RankIC</h2><p>每日秩相关系数 RankIC 的算术累加；缺失日期留空，不参与累加。</p><div class="content">{rank_ic_chart}</div></section>
 </div>
 <div id="page-years" role="tabpanel" aria-labelledby="tab-years" hidden>
-<section><h2>IC方向优选组 G{self.preferred_group[-1]} · 分年绩效</h2><p>多头组由完整展示区间的 IC 均值确定。区间收益为该年实际覆盖日期的复利收益，首尾年份可能不完整；回撤每年重置。</p><div class="content">{yearly_table}</div></section>
-<section><h2>分年五组累计收益</h2><p>按年份分面展示五组收益。各年从 0 重新开始，净值从 1 按该年有效日收益复利累计，不继承上一年净值；横轴按有效交易日排列。</p><div id="yearly-curves" class="content"></div></section>
+<section><h2>IC方向优选组 G{self.preferred_group.split("_")[1]} · 分年绩效</h2><p>多头组由完整展示区间的 IC 均值确定。区间收益为该年实际覆盖日期的复利收益，首尾年份可能不完整；回撤每年重置。</p><div class="content">{yearly_table}</div></section>
+<section><h2>分年各组累计收益</h2><p>按年份分面展示各组收益。各年从 0 重新开始，净值从 1 按该年有效日收益复利累计，不继承上一年净值；横轴按有效交易日排列。</p><div id="yearly-curves" class="content"></div></section>
 </div>
 <footer><b>计算口径</b><br>
 日收益使用小数；年化交易日数 {self.periods_per_year:g}，年化无风险利率 {self.risk_free_rate:.2%}。
 年化收益 = ∏(1 + 日收益)^(年化交易日数 / 有效交易日数) − 1；年化波动率 = 日收益样本标准差 × √年化交易日数。
 Sharpe = (平均日收益 − 等效日无风险利率) / 日收益样本标准差 × √年化交易日数。
 ICIR / RankICIR = 均值 / 样本标准差；年化 IR 再乘 √年化交易日数。标准差为零或样本不足时显示「—」。<br>
-IC 均值 &gt; 0 时做多 G5、做空 G1，否则做多 G1、做空 G5。第一页按所选区间确定方向，其他页按完整展示区间确定，属于事后分析。
+IC 均值 &gt; 0 时做多 G{len(self.GROUPS)}、做空 G1，否则做多 G1、做空 G{len(self.GROUPS)}。第一页按所选区间确定方向，其他页按完整展示区间确定，属于事后分析。
 多空按多头 100%、空头 100% 的收益差计算，未除以 2；不计手续费、滑点和融券成本。
 缺失 IC / RankIC 各自剔除；任一组缺失收益的日期从全部收益统计中共同剔除，不填充为零。
 平均换手率沿用原始日换手率，在有效收益日内求均值；拖动区间不重建持仓，首日沿用已有值。收益图横轴按有效交易日等距排列。<br>

@@ -31,11 +31,22 @@ class MiddleFreqFactorConstructor:
 
     def _select_stock_codes(self, trade_dates):
         """生成每日股票池：主板、非 ST、连续交易至少 250 天、全天收盘价非恒定。"""
-        stock_pool = pd.read_parquet(self.backtest_data_path, columns=["code", "trade_time", "consecutive_trading_days", "is_constant_close"])
+        # 读取时先按时间区间和数值条件下推过滤，只对剩余行做日期字符串转换。
+        stock_pool = pd.read_parquet(
+            self.backtest_data_path,
+            columns=["code", "trade_time"],
+            filters=[
+                ("trade_time", ">=", pd.Timestamp(min(trade_dates))),
+                ("trade_time", "<", pd.Timestamp(max(trade_dates)) + pd.Timedelta(days=1)),
+                ("consecutive_trading_days", ">=", 250),
+                ("is_constant_close", "==", False),
+            ],
+        )
         stock_pool = stock_pool.loc[stock_pool["code"].str.startswith(("000", "001", "002", "003", "600", "601", "603", "605"))]
-        stock_pool["date"] = pd.to_datetime(stock_pool["trade_time"]).dt.strftime("%Y%m%d")
-        stock_pool = stock_pool.loc[stock_pool["is_constant_close"].eq(False)]
-        stock_pool = stock_pool.loc[stock_pool["date"].isin(trade_dates) & stock_pool["consecutive_trading_days"].ge(250), ["date", "code"]]
+        # 只对唯一交易日做一次字符串格式化，再按编码映射回每一行。
+        day_codes, days = pd.factorize(pd.to_datetime(stock_pool["trade_time"]).dt.normalize())
+        stock_pool["date"] = days.strftime("%Y%m%d").take(day_codes)
+        stock_pool = stock_pool.loc[stock_pool["date"].isin(trade_dates), ["date", "code"]]
 
         stock_st_status = pd.read_parquet(os.path.join(self.stock_st_status_dir, "stock_st_status.parquet"), columns=["code", "date", "is_st"])
         stock_pool = stock_pool.merge(stock_st_status, on=["code", "date"], how="left")
