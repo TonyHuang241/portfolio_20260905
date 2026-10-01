@@ -23,6 +23,13 @@ class DataUpdater:
         formatted_dates = pd.to_datetime(unique_dates).dt.strftime("%Y%m%d")
         return dates.map(dict(zip(unique_dates, formatted_dates)))
 
+    @staticmethod
+    def _format_codes(codes: pd.Series) -> pd.Series:
+        # 先处理不重复的代码，再映射回各行；对全量数据 str.split 会逐行生成列表，非常慢。
+        unique_codes = codes.dropna().drop_duplicates()
+        formatted_codes = unique_codes.str.split(".", n=1).str[0].str.zfill(6)
+        return codes.map(dict(zip(unique_codes, formatted_codes)))
+
     def integrate_data(self):
         minutes = pd.read_csv(Path(self.new_data_dir) / "daily_minutes.csv", dtype={"code": str})
         exrights = pd.read_csv(Path(self.new_data_dir) / "stock_exrights.csv", dtype={"code": str})
@@ -45,7 +52,7 @@ class DataUpdater:
         exrights.to_csv(adj_factors_dir / "stock_exrights.csv", index=False, encoding="utf-8-sig")
 
         limit_price = pd.read_csv(Path(self.new_data_dir) / "limit_price.csv", dtype={"code": str, "date": str})
-        limit_price["code"] = limit_price["code"].str.split(".", n=1).str[0].str.zfill(6)
+        limit_price["code"] = self._format_codes(limit_price["code"])
         # 日级日期统一使用 date 列及 YYYYMMDD 字符串，与因子和评估数据一致。
         limit_price["date"] = self._format_dates(limit_price["date"])
         limit_price_dir = Path(self.output_dir) / "limit_price"
@@ -53,14 +60,14 @@ class DataUpdater:
         limit_price.to_parquet(limit_price_dir / "limit_price.parquet", index=False)
 
         stock_st_status = pd.read_csv(Path(self.new_data_dir) / "stock_st_status.csv", dtype={"code": str, "date": str})
-        stock_st_status["code"] = stock_st_status["code"].str.split(".", n=1).str[0].str.zfill(6)
+        stock_st_status["code"] = self._format_codes(stock_st_status["code"])
         stock_st_status["date"] = self._format_dates(stock_st_status["date"])
         stock_st_status_dir = Path(self.output_dir) / "stock_st_status"
         stock_st_status_dir.mkdir(parents=True, exist_ok=True)
         stock_st_status.to_parquet(stock_st_status_dir / "stock_st_status.parquet", index=False)
 
         mkcap = pd.read_csv(Path(self.new_data_dir) / "mkcap.csv", dtype={"code": str, "trading_day": str})
-        mkcap["code"] = mkcap["code"].str.split(".", n=1).str[0].str.zfill(6)
+        mkcap["code"] = self._format_codes(mkcap["code"])
         mkcap = mkcap.rename(columns={"trading_day": "date", "total_value": "mkcap"})
         mkcap["date"] = self._format_dates(mkcap["date"])
         fundamentals_dir = Path(self.output_dir) / "fundamentals"
@@ -69,7 +76,7 @@ class DataUpdater:
 
         # 每只股票上月最后一个交易日的市值，记在当月第一天。
         mkcap_monthly = mkcap.sort_values("date")
-        mkcap_monthly["date"] = (pd.to_datetime(mkcap_monthly["date"], format="%Y%m%d") + pd.offsets.MonthBegin(1)).dt.strftime("%Y%m%d")
+        mkcap_monthly["date"] = self._format_dates(pd.to_datetime(mkcap_monthly["date"], format="%Y%m%d") + pd.offsets.MonthBegin(1))
         mkcap_monthly = mkcap_monthly.drop_duplicates(subset=["code", "date"], keep="last")
         mkcap_monthly.to_parquet(fundamentals_dir / "mkcap_monthly.parquet", index=False)
 
@@ -100,19 +107,38 @@ class DataUpdater:
         gc.collect()
         return result, daily_stock
 
+    def _calculate_adj_factors(self, daily_stock_data):
+        """由除权字段和除权日前一交易日的原始收盘价计算累计等比后复权因子，每次除权一行。"""
+        exrights = pd.read_csv(Path(self.output_dir) / "adj_factors" / "stock_exrights.csv", usecols=["date", "code", "allotted_ps", "rationed_ps", "rationed_px", "bonus_ps"], dtype={"date": str, "code": str})
+        exrights["code"] = self._format_codes(exrights["code"])
+        exrights["__adj_date"] = pd.to_datetime(exrights["date"], format="%Y%m%d")
+        exrights = exrights.sort_values("__adj_date")
+
+        # 取除权日之前最后一个有收盘价的交易日，停牌跨过除权日时即停牌前的收盘价。
+        daily_close = daily_stock_data.loc[daily_stock_data["close"].gt(0), ["code", "date", "close"]].rename(columns={"close": "previous_close"})
+        daily_close["__adj_date"] = pd.to_datetime(daily_close["date"], format="%Y%m%d")
+        daily_close = daily_close.drop(columns="date").sort_values("__adj_date")
+        exrights = pd.merge_asof(exrights, daily_close, on="__adj_date", by="code", direction="backward", allow_exact_matches=False)
+
+        # 单次因子 = 前收盘 / 除权参考价，参考价 = (前收盘 - 每股派息 + 配股价 × 配股比例) / (1 + 送转比例 + 配股比例)。
+        # 早于数据起点的除权没有前收盘，对所有已有价格是同一个常数，不影响收益，取 1。
+        exrights["adj_factor"] = exrights["previous_close"] * (1 + exrights["allotted_ps"] + exrights["rationed_ps"]) / (exrights["previous_close"] - exrights["bonus_ps"] + exrights["rationed_px"] * exrights["rationed_ps"])
+        exrights["adj_factor"] = exrights["adj_factor"].fillna(1)
+        exrights = exrights.sort_values(["code", "__adj_date"])
+        exrights["adj_factor"] = exrights.groupby("code")["adj_factor"].cumprod()
+        return exrights[["code", "__adj_date", "adj_factor"]].sort_values("__adj_date")
+
     @staticmethod
-    def _adjust_prices(data, exrights, date_column):
-        """按当日已生效的累计系数后复权：价格 × a + b，保留零价格标记。"""
+    def _adjust_prices(data, adj_factors, date_column):
+        """按当日已生效的累计等比因子后复权：原始价格 × adj_factor，相邻复权价之比即真实收益。"""
         data = data.copy()
-        data["code"] = data["code"].astype(str).str.split(".", n=1).str[0].str.zfill(6)
         data["__adj_date"] = pd.to_datetime(data[date_column]).dt.normalize()
         data = data.sort_values("__adj_date")
-        data = pd.merge_asof(data, exrights, on="__adj_date", by="code", direction="backward")
-        data["exer_backward_a"] = data["exer_backward_a"].fillna(1)
-        data["exer_backward_b"] = data["exer_backward_b"].fillna(0)
+        data = pd.merge_asof(data, adj_factors, on="__adj_date", by="code", direction="backward")
+        data["adj_factor"] = data["adj_factor"].fillna(1)
         for column in data.columns.intersection(["open", "high", "low", "close", "pre_close", "price"]):
-            data[column] = (data[column] * data["exer_backward_a"] + data["exer_backward_b"]).where(data[column].ne(0), 0)
-        return data.drop(columns=["__adj_date", "exer_backward_a", "exer_backward_b"])
+            data[column] = data[column] * data["adj_factor"]
+        return data.drop(columns="__adj_date")
 
     def generate_backtest_data(self):
         backtest_dir = Path(self.output_dir) / "stock_daily"
@@ -130,13 +156,18 @@ class DataUpdater:
             existing_data["trade_time"] = pd.to_datetime(existing_data["trade_time"])
             existing_data = existing_data.loc[(existing_data["trade_time"] >= start_date) & existing_data["open"].ne(0)]
             existing_dates = set(existing_data["trade_time"].dt.normalize().drop_duplicates())
-            tables.append(existing_data)
+            # 已有数据除以原因子还原为原始价格，与新数据一起按最新除权信息重新复权。
+            for column in existing_data.columns.intersection(["open", "high", "low", "close", "pre_close", "price"]):
+                existing_data[column] = existing_data[column] / existing_data["adj_factor"]
+            tables.append(existing_data.drop(columns="adj_factor"))
 
         if self.update_all != 1 and daily_stock_file.exists():
             existing_daily = pd.read_parquet(daily_stock_file)
             existing_daily = existing_daily.loc[existing_daily["date"] >= start_date.strftime("%Y%m%d")]
             existing_dates &= set(pd.to_datetime(existing_daily["date"].drop_duplicates(), format="%Y%m%d"))
-            daily_tables.append(existing_daily)
+            for column in existing_daily.columns.intersection(["open", "high", "low", "close"]):
+                existing_daily[column] = existing_daily[column] / existing_daily["adj_factor"]
+            daily_tables.append(existing_daily.drop(columns="adj_factor"))
         else:
             existing_dates.clear()
 
@@ -163,21 +194,28 @@ class DataUpdater:
 
         # 同时生成日频 OHLC 和恰好 10:00 且开盘价不为 0 的回测记录。
         if daily_sources:
-            exrights = pd.read_csv(Path(self.output_dir) / "adj_factors" / "stock_exrights.csv", usecols=["date", "code", "exer_backward_a", "exer_backward_b"], dtype={"date": str, "code": str})
-            exrights["code"] = exrights["code"].str.split(".", n=1).str[0].str.zfill(6)
-            exrights["date"] = pd.to_datetime(exrights["date"])
-            exrights = exrights.rename(columns={"date": "__adj_date"})
-            exrights = exrights.sort_values("__adj_date")
             with Pool(processes=self.processes) as pool:
                 results = pool.imap(self._prepare_daily_backtest_data, sorted(daily_sources.items()), chunksize=1)
-                for backtest, daily_stock in tqdm(results, total=len(daily_sources), desc="Preparing backtest data", unit="day"):
-                    tables.append(self._adjust_prices(backtest, exrights, "trade_time"))
-                    daily_tables.append(self._adjust_prices(daily_stock, exrights, "date"))
+                results = list(tqdm(results, total=len(daily_sources), desc="Preparing backtest data", unit="day"))
+            tables.extend([backtest for backtest, _ in results])
+            daily_tables.extend([daily_stock for _, daily_stock in results])
 
-        # 合并新旧数据，按时间和股票代码去重、排序后保存。
+        # 合并新旧日线（均为原始价格），按日期和股票代码去重、排序。
+        daily_stock_data = pd.concat(daily_tables, ignore_index=True)
+        daily_stock_data["code"] = self._format_codes(daily_stock_data["code"].astype(str))
+        daily_stock_data = daily_stock_data.drop_duplicates(subset=["date", "code"], keep="last")
+
+        # 由原始收盘价计算等比因子，日线和 10 点数据用同一套因子统一复权一次。
+        adj_factors = self._calculate_adj_factors(daily_stock_data)
+        daily_stock_data = self._adjust_prices(daily_stock_data, adj_factors, "date")
+        daily_stock_data = daily_stock_data.sort_values(["date", "code"])
+        daily_stock_data.to_parquet(daily_stock_file, index=False)
+
+        # 合并新旧数据，按时间和股票代码去重、复权、排序后保存。
         backtest_data = pd.concat(tables, ignore_index=True)
-        backtest_data["code"] = backtest_data["code"].astype(str).str.split(".", n=1).str[0].str.zfill(6)
+        backtest_data["code"] = self._format_codes(backtest_data["code"].astype(str))
         backtest_data = backtest_data.drop_duplicates(subset=["trade_time", "code"], keep="last")
+        backtest_data = self._adjust_prices(backtest_data, adj_factors, "trade_time")
         backtest_data = backtest_data.sort_values(["trade_time", "code"])
 
         # 在过滤后的样本上按股票划分连续区间，日期间隔超过 15 个自然日时重新计数。
@@ -185,9 +223,3 @@ class DataUpdater:
         backtest_data["consecutive_trading_days"] = backtest_data.groupby("code")["consecutive_trading_days"].cumsum()
         backtest_data["consecutive_trading_days"] = backtest_data.groupby(["code", "consecutive_trading_days"]).cumcount() + 1
         backtest_data.to_parquet(backtest_file, index=False)
-
-        daily_stock_data = pd.concat(daily_tables, ignore_index=True)
-        daily_stock_data["code"] = daily_stock_data["code"].astype(str).str.split(".", n=1).str[0].str.zfill(6)
-        daily_stock_data = daily_stock_data.drop_duplicates(subset=["date", "code"], keep="last")
-        daily_stock_data = daily_stock_data.sort_values(["date", "code"])
-        daily_stock_data.to_parquet(daily_stock_file, index=False)

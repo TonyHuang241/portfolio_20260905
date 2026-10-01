@@ -12,7 +12,7 @@
 
     "seperator2": "-----------------------config for middle freq factors---------------------",
     "middle_factor_calc_dir": "portfolio_20260905/factors/construction/middle_freq_factor_calculation/",
-    "middle_factor_list": ["Mom1m"],
+    "middle_factor_list": ["Mom1m", "AmihudIlliquidity"],
     
     "seperator3": "-----------------------config for all factors---------------------",
     "stock_daily_dir": "a_share_market_data/stock_daily/",
@@ -21,8 +21,8 @@
     "adj_factor_dir": "a_share_market_data/adj_factor/",
     "output_dir": "a_share_market_data/factors/",
     
-    "processes": 1,
-    "start_date": "20250101",
+    "processes": 16,
+    "start_date": "20180101",
     "end_date": "20260918",
     "update_all": 1
 }

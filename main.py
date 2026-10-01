@@ -4,6 +4,12 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
+from update_data.update_data import DataUpdater
+from factors.construction.high_freq_factor_construction import HighFreqFactorConstructor
+from factors.construction.middle_freq_factor_construction import MiddleFreqFactorConstructor
+from factors.evaluation.single_factor_evaluation_v1 import SingleFactorEvaluation
+from factors.evaluation.multi_factor_evaluation import MultiFactorEvaluation
+
 CONFIG_FILE = "portfolio_20260905/config/config_factor_evaluation.json"
 CONFIG_LOCAL_FILE = Path(__file__).resolve().parent / "config_local.json"
 
@@ -21,12 +27,6 @@ def load_config(config_file=CONFIG_FILE):
 
 
 if __name__ == "__main__":
-    from update_data.update_data import DataUpdater
-    from factors.construction.high_freq_factor_construction import HighFreqFactorConstructor
-    from factors.construction.middle_freq_factor_construction import MiddleFreqFactorConstructor
-    from factors.evaluation.single_factor_evaluation_v1 import SingleFactorEvaluation
-    from factors.evaluation.multi_factor_evaluation import MultiFactorEvaluation
-
     config = load_config()
 
     config_name = Path(CONFIG_FILE).name

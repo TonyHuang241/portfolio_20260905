@@ -1,5 +1,6 @@
 import os
 from importlib import import_module
+from multiprocessing import Pool
 
 import pandas as pd
 from tqdm import tqdm
@@ -15,6 +16,7 @@ class MiddleFreqFactorConstructor:
         self.start_date = config["start_date"]
         self.end_date = config["end_date"]
         self.update_all = config["update_all"]
+        self.processes = config["processes"]
         self._regist_factors(config.get("middle_factor_list", []))
 
     def _regist_factors(self, factor_list):
@@ -52,6 +54,25 @@ class MiddleFreqFactorConstructor:
         stock_pool = stock_pool.merge(stock_st_status, on=["code", "date"], how="left")
         return stock_pool.loc[~stock_pool["is_st"].eq(True), ["date", "code"]]
 
+    @staticmethod
+    def _calculate_factor(task):
+        """在工作进程中计算单个因子及其滚动均值，筛选股票池后与历史数据合并保存。"""
+        factor_name, factor_class, daily, stock_pool, history_factor, pending_dates, rolling_windows, output_dir = task
+        factor = factor_class(daily=daily).calculate()
+        factor = factor.sort_values(["code", "date"]).reset_index(drop=True)
+        factor_by_code = factor.groupby("code")[factor_name]
+        for window in rolling_windows:
+            factor[f"{factor_name}_{window}_m"] = factor_by_code.rolling(window).mean().droplevel(0).reindex(factor.index)
+
+        factor = factor.loc[factor["date"].isin(pending_dates)]
+        factor = factor.merge(stock_pool, on=["code", "date"], how="inner")
+        factor = pd.concat([history_factor, factor], ignore_index=True)
+        factor = factor.drop_duplicates(["code", "date"], keep="last")
+        factor = factor.sort_values(["code", "date"]).reset_index(drop=True)
+
+        factor.to_parquet(os.path.join(output_dir, f"{factor_name}.parquet"), index=False)
+        return factor_name
+
     def update_factors(self):
         """一次读取日线，预留因子回看期及滚动窗口，计算完均值后筛选输出。"""
         if not self.factors:
@@ -88,20 +109,13 @@ class MiddleFreqFactorConstructor:
         stock_pool = self._select_stock_codes(pending_dates)
         os.makedirs(self.output_dir, exist_ok=True)
 
-        for factor_name, factor_class in tqdm(self.factors.items(), desc="Updating middle-frequency factors", unit="factor"):
-            if not pending_by_factor[factor_name]:
-                continue
-
-            factor = factor_class(daily=daily).calculate()
-            factor = factor.sort_values(["code", "date"]).reset_index(drop=True)
-            factor_by_code = factor.groupby("code")[factor_name]
-            for window in rolling_windows:
-                factor[f"{factor_name}_{window}_m"] = factor_by_code.rolling(window).mean().droplevel(0).reindex(factor.index)
-
-            factor = factor.loc[factor["date"].isin(pending_by_factor[factor_name])]
-            factor = factor.merge(stock_pool, on=["code", "date"], how="inner")
-            factor = pd.concat([factor_data[factor_name], factor], ignore_index=True)
-            factor = factor.drop_duplicates(["code", "date"], keep="last")
-            factor = factor.sort_values(["code", "date"]).reset_index(drop=True)
-
-            factor.to_parquet(os.path.join(self.output_dir, f"{factor_name}.parquet"), index=False)
+        # 按因子并行，每个工作进程完成单个因子的计算、滚动均值和合并保存。
+        tasks = [
+            (factor_name, factor_class, daily, stock_pool, factor_data[factor_name], pending_by_factor[factor_name], rolling_windows, self.output_dir)
+            for factor_name, factor_class in self.factors.items() if pending_by_factor[factor_name]
+        ]
+        with Pool(processes=self.processes) as pool:
+            results = pool.imap_unordered(MiddleFreqFactorConstructor._calculate_factor, tasks)
+            factor_progress = tqdm(results, total=len(tasks), desc="Updating middle-frequency factors", unit="factor")
+            for factor_name in factor_progress:
+                factor_progress.set_postfix_str(f"Completed factor: {factor_name}")
