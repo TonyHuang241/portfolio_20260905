@@ -11,6 +11,7 @@ class MiddleFreqFactorConstructor:
         self.stock_daily_dir = config["stock_daily_dir"]
         self.backtest_data_path = os.path.join(self.stock_daily_dir, "daily_stock_data_10am.parquet")
         self.stock_st_status_dir = config["stock_st_status_dir"]
+        self.financial_data_path = os.path.join(config["fundamentals_dir"], "financial_data.parquet")
         self.output_dir = config["output_dir"]
         self.middle_factor_calc_dir = config["middle_factor_calc_dir"]
         self.start_date = config["start_date"]
@@ -32,7 +33,7 @@ class MiddleFreqFactorConstructor:
             self.factors[factor_name] = getattr(module, factor_name)
 
     def _select_stock_codes(self, trade_dates):
-        """生成每日股票池：主板、非 ST、连续交易至少 250 天、全天收盘价非恒定。"""
+        """生成每日股票池：非 ST、连续交易至少 250 天；不区分板块，非主板在评估时剔除。"""
         # 读取时先按时间区间和数值条件下推过滤，只对剩余行做日期字符串转换。
         stock_pool = pd.read_parquet(
             self.backtest_data_path,
@@ -41,10 +42,8 @@ class MiddleFreqFactorConstructor:
                 ("trade_time", ">=", pd.Timestamp(min(trade_dates))),
                 ("trade_time", "<", pd.Timestamp(max(trade_dates)) + pd.Timedelta(days=1)),
                 ("consecutive_trading_days", ">=", 250),
-                ("is_constant_close", "==", False),
             ],
         )
-        stock_pool = stock_pool.loc[stock_pool["code"].str.startswith(("000", "001", "002", "003", "600", "601", "603", "605"))]
         # 只对唯一交易日做一次字符串格式化，再按编码映射回每一行。
         day_codes, days = pd.factorize(pd.to_datetime(stock_pool["trade_time"]).dt.normalize())
         stock_pool["date"] = days.strftime("%Y%m%d").take(day_codes)
@@ -57,8 +56,8 @@ class MiddleFreqFactorConstructor:
     @staticmethod
     def _calculate_factor(task):
         """在工作进程中计算单个因子及其滚动均值，筛选股票池后与历史数据合并保存。"""
-        factor_name, factor_class, daily, stock_pool, history_factor, pending_dates, rolling_windows, output_dir = task
-        factor = factor_class(daily=daily).calculate()
+        factor_name, factor_class, daily, financial_data, stock_pool, history_factor, pending_dates, rolling_windows, output_dir = task
+        factor = factor_class(daily=daily, financial_data=financial_data).calculate()
         factor = factor.sort_values(["code", "date"]).reset_index(drop=True)
         factor_by_code = factor.groupby("code")[factor_name]
         for window in rolling_windows:
@@ -104,14 +103,18 @@ class MiddleFreqFactorConstructor:
 
         history_days = 252 + max(factor.lookback_days for factor in self.factors.values())
         history_start = trade_dates[max(0, trade_dates.index(pending_dates[0]) - history_days)]
-        # 输入保留所有股票的完整历史，直至数据最新日期；股票池只筛选输出。
+        # 计算前剔除开盘价为 0、全天成交额为 0（停牌）的日线，以及 ST 和连续交易不满 250 天的观测；一字日和全天价格恒定但有成交的样本保留。
         daily = daily.loc[daily["date"].ge(history_start)]
-        stock_pool = self._select_stock_codes(pending_dates)
+        daily = daily.loc[daily["open"].ne(0) & daily["money"].ne(0)]
+        stock_pool = self._select_stock_codes(trade_dates[trade_dates.index(history_start):])
+        daily = daily.merge(stock_pool, on=["date", "code"], how="inner")
+        # 财务数据不按日线回看期截断，保留全部历史报告期，供需要 TTM、同比等多期数据的因子使用。
+        financial_data = pd.read_parquet(self.financial_data_path)
         os.makedirs(self.output_dir, exist_ok=True)
 
         # 按因子并行，每个工作进程完成单个因子的计算、滚动均值和合并保存。
         tasks = [
-            (factor_name, factor_class, daily, stock_pool, factor_data[factor_name], pending_by_factor[factor_name], rolling_windows, self.output_dir)
+            (factor_name, factor_class, daily, financial_data, stock_pool, factor_data[factor_name], pending_by_factor[factor_name], rolling_windows, self.output_dir)
             for factor_name, factor_class in self.factors.items() if pending_by_factor[factor_name]
         ]
         with Pool(processes=self.processes) as pool:

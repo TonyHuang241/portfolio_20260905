@@ -80,6 +80,16 @@ class DataUpdater:
         mkcap_monthly = mkcap_monthly.drop_duplicates(subset=["code", "date"], keep="last")
         mkcap_monthly.to_parquet(fundamentals_dir / "mkcap_monthly.parquet", index=False)
 
+        # 季度财务数据：每只股票每个报告期一行，end_date 为报告期、publ_date 为公告日；没有公告日的报告期无法确定可用时间，剔除。
+        financial_data = pd.read_csv(Path(self.new_data_dir) / "fundamentals_quarterly.csv", dtype={"secu_code": str, "end_date": str, "publ_date": str})
+        financial_data = financial_data.rename(columns={"secu_code": "code"})
+        financial_data["code"] = self._format_codes(financial_data["code"])
+        financial_data["end_date"] = self._format_dates(financial_data["end_date"])
+        financial_data["publ_date"] = self._format_dates(financial_data["publ_date"])
+        financial_data = financial_data.loc[financial_data["publ_date"].notna()]
+        financial_data = financial_data.sort_values(["code", "end_date"])
+        financial_data.to_parquet(fundamentals_dir / "financial_data.parquet", index=False)
+
     @staticmethod
     def _prepare_daily_backtest_data(item):
         trade_date, (source, member) = item
@@ -167,7 +177,7 @@ class DataUpdater:
             existing_dates &= set(pd.to_datetime(existing_daily["date"].drop_duplicates(), format="%Y%m%d"))
             for column in existing_daily.columns.intersection(["open", "high", "low", "close"]):
                 existing_daily[column] = existing_daily[column] / existing_daily["adj_factor"]
-            daily_tables.append(existing_daily.drop(columns="adj_factor"))
+            daily_tables.append(existing_daily.drop(columns=["adj_factor", "mkcap"], errors="ignore"))
         else:
             existing_dates.clear()
 
@@ -204,6 +214,11 @@ class DataUpdater:
         daily_stock_data = pd.concat(daily_tables, ignore_index=True)
         daily_stock_data["code"] = self._format_codes(daily_stock_data["code"].astype(str))
         daily_stock_data = daily_stock_data.drop_duplicates(subset=["date", "code"], keep="last")
+
+        # 按最新的 mkcap.parquet 为新旧日线统一匹配当日总市值；市值源文件可能有重复行，先去重，缺失市值保留为空。
+        mkcap = pd.read_parquet(Path(self.output_dir) / "fundamentals" / "mkcap.parquet", columns=["code", "date", "mkcap"])
+        mkcap = mkcap.drop_duplicates(subset=["code", "date"], keep="last")
+        daily_stock_data = daily_stock_data.merge(mkcap, on=["code", "date"], how="left")
 
         # 由原始收盘价计算等比因子，日线和 10 点数据用同一套因子统一复权一次。
         adj_factors = self._calculate_adj_factors(daily_stock_data)

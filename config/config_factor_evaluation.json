@@ -8,9 +8,10 @@
     "factor_data_dir": "a_share_market_data/factors/",
     
     "specified_column": "",
-    "start_date": "20210101",
+    "start_date": "20200101",
     "stock_pool": 2000,
+    "stock_board": "main board",
     "group_number": 10,
-    "processes": 24,
+    "processes": 16,
     "update_all": 1
 }

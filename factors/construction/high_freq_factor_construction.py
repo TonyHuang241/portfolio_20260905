@@ -72,10 +72,9 @@ class HighFreqFactorConstructor:
         # 只格式化不同日期，避免对每日上百万条分钟记录重复转换字符串。
         minutes["date"] = minutes["date"].map({date: date.strftime("%Y%m%d") for date in minutes["date"].dropna().unique()})
 
-        # 任一条开盘价为零或全天收盘价恒定，则清空该股票当天全部行情，保留代码和时间。
+        # 任一条开盘价为零或全天成交额为零（停牌），则清空该股票当天全部行情，保留代码和时间；一字日和全天价格恒定但有成交的样本保留。
         invalid_day = minutes["open"].eq(0).groupby([minutes["code"], minutes["date"]]).transform("any")
-        # 用唯一值数量判断价格恒定，避免浮点误差使标准差不严格为零。
-        invalid_day |= minutes.groupby(["code", "date"])["close"].transform("nunique").eq(1)
+        invalid_day |= minutes.groupby(["code", "date"])["money"].transform("sum").eq(0)
         minutes.loc[invalid_day, minutes.columns.difference(["code", "trade_time", "date"])] = np.nan
 
         results = {}

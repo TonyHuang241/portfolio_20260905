@@ -31,7 +31,7 @@ python main.py
 
 首次使用按数据更新、因子构建、因子评估的顺序执行；已有对应数据时可直接运行后续步骤。行情数据需自行准备，不包含在仓库中。
 
-- **数据更新**：从 `new_data_dir` 读取 `daily_minutes.csv`、`stock_exrights.csv`、`limit_price.csv`、`stock_st_status.csv` 和 `mkcap.csv`，整理数据并生成 `stock_daily/daily_stock_data_10am.parquet`（10 点行情）和 `stock_daily/daily_stock_data.parquet`（日频 OHLC）。
+- **数据更新**：从 `new_data_dir` 读取 `daily_minutes.csv`、`stock_exrights.csv`、`limit_price.csv`、`stock_st_status.csv` 和 `mkcap.csv`，整理数据并生成 `stock_daily/daily_stock_data_10am.parquet`（10 点行情）和 `stock_daily/daily_stock_data.parquet`（日频 OHLC，并按 `code`、`date` 合并当日总市值列 `mkcap`，单位为元，无市值时为空）。
 - **因子构建**：`construction_mode` 选择 `high`（高频）或 `middle`（中频），省略时默认高频。高频通过 `factor_list` 选择因子，中频通过 `middle_factor_list` 选择，空列表表示对应目录全部因子。可设置输出日期范围，高频支持 `processes` 并行进程数。结果保存到配置的 `output_dir`。
 - **中频计算**：一次读取 `stock_daily/daily_stock_data.parquet`，将最早待更新日期之前 252 个市场交易日再加因子回看期（`Mom1m` 为 20 日，共 272 日）起至数据最新日期的日线交给因子类；历史不足时从最早可用日期开始。先按股票计算 5、20、60、120、250 日完整窗口滚动均值（列名如 `Mom1m_250_m`），再筛选待更新日期和股票池；有效历史不足时均值为空。增量更新按已有日期跳过计算，并保留已有均值列。`Mom1m` 为 `close / close_20日前 - 1`（上涨为正，下跌为负），直接使用输入 `close`，不额外复权；端点价格缺失或非正时结果为空。
 - **因子评估**：`evaluation_mode` 为 `multi` 时遍历因子目录中的全部因子列；为 `single` 时需将 `specified_column` 设为待评估的因子列名。`group_number` 设置每日按因子值等分的组数（默认 10）。输出包含分组收益、IC、Rank IC 等指标及 HTML 报告，批量模式额外生成 `factor_comparison.csv`。

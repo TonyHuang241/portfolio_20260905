@@ -12,7 +12,7 @@
 
     "seperator2": "-----------------------config for middle freq factors---------------------",
     "middle_factor_calc_dir": "portfolio_20260905/factors/construction/middle_freq_factor_calculation/",
-    "middle_factor_list": ["Mom1m", "AmihudIlliquidity"],
+    "middle_factor_list": [],
     
     "seperator3": "-----------------------config for all factors---------------------",
     "stock_daily_dir": "a_share_market_data/stock_daily/",

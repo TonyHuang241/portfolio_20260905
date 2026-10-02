@@ -21,6 +21,7 @@ class SingleFactorEvaluation:
         self.start_date = config["start_date"]
         self.update_all = config["update_all"]
         self.stock_pool = config["stock_pool"]
+        self.stock_board = config["stock_board"]
         self.group_number = config.get("group_number", 10)
         self.stock_info_path = Path(config["stock_minutes_dir"]).parent / "__daily_data_update" / "stock_info.csv"
         self._clear_outputs = factor_data is None
@@ -33,8 +34,13 @@ class SingleFactorEvaluation:
             factor = factor_data
 
         factor = factor[["code", "date", specified_column]]
+        # 因子构建不区分板块，按 stock_board 决定评估范围：main board 只保留沪深主板，all 不筛选。
+        if self.stock_board == "main board":
+            factor = factor.loc[factor["code"].str.startswith(("000", "001", "002", "003", "600", "601", "603", "605"))]
+        elif self.stock_board != "all":
+            raise ValueError(f"stock_board must be 'main board' or 'all', got {self.stock_board!r}")
 
-        self.factor_name = factor.columns[-1]
+        self.factor_name = specified_column
         self.factor = factor.rename(columns={self.factor_name: "__factor"})
         # 保留最新收盘因子，供下一交易日选股；历史持仓仍使用滞后一期的因子。
         self.next_factor = self.factor.loc[self.factor["date"].eq(self.factor["date"].max())].copy()
@@ -55,7 +61,7 @@ class SingleFactorEvaluation:
 
     def _select_stock_pool(self, factor, monthly_mkcap):
         """按因子所标日期的月份，在有效样本中筛选小市值股票。"""
-        factor = factor.dropna(subset=["__factor"]).copy()
+        factor = factor.dropna(subset=["__factor"])
         factor["month"] = factor["date"].str[:6] + "01"
         factor = factor.merge(monthly_mkcap, on=["code", "month"])
         factor = factor.dropna(subset=["mkcap"])
@@ -111,7 +117,7 @@ class SingleFactorEvaluation:
         columns = return_columns + ["IC", "rankIC"] + count_columns + turnover_columns
 
         # 读取现有的evaluation数据
-        if self.update_all == 1 and output_path.is_file():
+        if self.update_all == 0 and output_path.is_file():
             existing_evaluation = pd.read_csv(output_path, index_col="date")
             existing_evaluation.index = existing_evaluation.index.map(str)
             existing_evaluation = existing_evaluation.loc[~np.isinf(existing_evaluation).any(axis=1)]
@@ -119,11 +125,7 @@ class SingleFactorEvaluation:
             existing_evaluation = pd.DataFrame(columns=columns, dtype=float)
             existing_evaluation.index.name = "date"
 
-        evaluation = pd.DataFrame(
-            index=pd.Index([str(date) for date in self.trade_dates[:-1]], name="date"),
-            columns=columns,
-            dtype=float,
-        )
+        evaluation = pd.DataFrame(index=pd.Index(self.trade_dates[:-1], name="date"), columns=columns, dtype=float)
 
         if prices_by_date is None:
             prices_by_date = self.load_prices(self.backtest_data_dir)
