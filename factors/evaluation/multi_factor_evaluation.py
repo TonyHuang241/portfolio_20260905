@@ -6,6 +6,7 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from factors.evaluation.single_factor_evaluation_v1 import SingleFactorEvaluation, _clear_existing_results
+from factors.evaluation.factor_correlation_analysis.factor_correlation_analyzer import FactorCorrelationAnalyzer
 
 
 class MultiFactorEvaluation:
@@ -41,4 +42,5 @@ class MultiFactorEvaluation:
 
         summary = pd.DataFrame(records)
         summary.to_csv(Path(self.config["output_dir"]) / "factor_comparison.csv", index=False, encoding="utf-8-sig")
+        FactorCorrelationAnalyzer(self.config).plot_results_html(summary)
         return summary

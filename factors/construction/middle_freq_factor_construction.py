@@ -108,7 +108,7 @@ class MiddleFreqFactorConstructor:
         daily = daily.loc[daily["open"].ne(0) & daily["money"].ne(0)]
         stock_pool = self._select_stock_codes(trade_dates[trade_dates.index(history_start):])
         daily = daily.merge(stock_pool, on=["date", "code"], how="inner")
-        # 财务数据不按日线回看期截断，保留全部历史报告期，供需要 TTM、同比等多期数据的因子使用。
+        # 财务数据不按日线回看期截断，保留全部历史公告，供需要同比等多期数据的因子使用。
         financial_data = pd.read_parquet(self.financial_data_path)
         os.makedirs(self.output_dir, exist_ok=True)
 

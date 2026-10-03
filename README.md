@@ -1,52 +1,105 @@
-# A 股高频因子研究
+# A 股因子研究
 
-基于股票分钟行情的因子研究项目，支持数据整理、高频因子构建、单因子及批量因子评估，并生成 HTML 可视化报告。
-
-## 项目结构
+基于分钟和日线行情的 A 股选股因子研究框架。完整流程是：整理行情 → 构建高频和中频因子 → 分组回测、计算 IC → 输出交互式 HTML 报告和每日多头持仓清单。
 
 ```text
-main.py                         # 运行入口与配置加载
-config/                         # 数据更新、因子构建、因子评估配置
-update_data/                    # 整理行情并生成回测数据
-construct_asset_pool/           # 股票基础信息与交易日历下载
-factors/construction/           # 因子构建与具体计算逻辑
-factors/evaluation/             # 因子评估与报告生成
-factor_list.csv                 # 因子清单
-config_local.example.json       # 本地路径配置示例
+原始 CSV ──数据更新──▶ 分钟 / 日线 / 财务 parquet ──因子构建──▶ 每个因子一个 parquet ──因子评估──▶ 指标 CSV + HTML 报告 + 持仓清单
 ```
 
-## 运行方式
+## 快速开始
 
-在 `main.py` 中修改 `CONFIG_FILE`，选择要执行的任务，然后运行：
+1. 复制 `config_local.example.json`，命名为 `config_local.json`，把 `root_dir` 设为代码目录和 `a_share_market_data/` 共同的上级目录。配置里以 `_dir` / `_path` 结尾的字段都相对这个目录解析。
+2. 在 [main.py](main.py) 中修改 `CONFIG_FILE` 选择任务，然后运行 `python main.py`。
 
-```bash
-python main.py
-```
-
-| 任务 | `CONFIG_FILE` |
-| --- | --- |
-| 数据更新 | `portfolio_20260905/config/config_data_update.json` |
-| 因子构建 | `portfolio_20260905/config/config_factor_construction.json` |
-| 因子评估（默认） | `portfolio_20260905/config/config_factor_evaluation.json` |
-
-首次使用按数据更新、因子构建、因子评估的顺序执行；已有对应数据时可直接运行后续步骤。行情数据需自行准备，不包含在仓库中。
-
-- **数据更新**：从 `new_data_dir` 读取 `daily_minutes.csv`、`stock_exrights.csv`、`limit_price.csv`、`stock_st_status.csv` 和 `mkcap.csv`，整理数据并生成 `stock_daily/daily_stock_data_10am.parquet`（10 点行情）和 `stock_daily/daily_stock_data.parquet`（日频 OHLC，并按 `code`、`date` 合并当日总市值列 `mkcap`，单位为元，无市值时为空）。
-- **因子构建**：`construction_mode` 选择 `high`（高频）或 `middle`（中频），省略时默认高频。高频通过 `factor_list` 选择因子，中频通过 `middle_factor_list` 选择，空列表表示对应目录全部因子。可设置输出日期范围，高频支持 `processes` 并行进程数。结果保存到配置的 `output_dir`。
-- **中频计算**：一次读取 `stock_daily/daily_stock_data.parquet`，将最早待更新日期之前 252 个市场交易日再加因子回看期（`Mom1m` 为 20 日，共 272 日）起至数据最新日期的日线交给因子类；历史不足时从最早可用日期开始。先按股票计算 5、20、60、120、250 日完整窗口滚动均值（列名如 `Mom1m_250_m`），再筛选待更新日期和股票池；有效历史不足时均值为空。增量更新按已有日期跳过计算，并保留已有均值列。`Mom1m` 为 `close / close_20日前 - 1`（上涨为正，下跌为负），直接使用输入 `close`，不额外复权；端点价格缺失或非正时结果为空。
-- **因子评估**：`evaluation_mode` 为 `multi` 时遍历因子目录中的全部因子列；为 `single` 时需将 `specified_column` 设为待评估的因子列名。`group_number` 设置每日按因子值等分的组数（默认 10）。输出包含分组收益、IC、Rank IC 等指标及 HTML 报告，批量模式额外生成 `factor_comparison.csv`。
-
-评估同时在 `output_dir` 的同级目录 `stock_list/` 导出多头股票清单，单因子与批量模式均适用，每次覆盖本次评估策略的文件：
-
-| 文件 | 内容 | 字段 |
+| 任务 | `CONFIG_FILE` | 入口类 |
 | --- | --- | --- |
-| `stock_list/<因子名>.csv` | 从 `start_date` 起的历史每日持仓，包含收益尚未兑现的最新交易日 | `date, code, group, factor_value` |
-| `stock_list/next_day/<因子名>.csv` | 最新交易日收盘后计算的下一交易日目标持仓，仅保存最新一期 | `signal_date, code, group, factor_value` |
+| 数据更新 | `portfolio_20260905/config/config_data_update.json` | `DataUpdater` |
+| 因子构建 | `portfolio_20260905/config/config_factor_construction.json` | `HighFreqFactorConstructor` / `MiddleFreqFactorConstructor` |
+| 因子评估 | `portfolio_20260905/config/config_factor_evaluation.json` | `SingleFactorEvaluation` / `MultiFactorEvaluation` |
 
-每行一只股票，按日期、股票代码排序；`date` 是持仓交易日，`signal_date` 是收盘信号日期，`factor_value` 是该次分组实际使用的因子值。历史持仓使用滞后一期的因子，下一日目标使用最新收盘因子。最新一期无有效样本时，目标文件仅保留表头，不回退到旧信号。默认输出位置为 `a_share_market_data/factors_evaluation_output/stock_list/`。
+第一次使用时按表格顺序执行。仓库不含行情数据，需要自行准备。三个任务都有 `update_all` 字段：设为 `1` 时全量重算并覆盖结果，设为 `0` 时只补算缺失的日期。
 
-两类清单均按六位股票代码匹配 `a_share_market_data/__daily_data_update/stock_info.csv`，追加 `name`、`industry`、`csrc_industry`、`region`、`concept` 等信息；未匹配到的持仓保留，信息列留空。历史持仓匹配的是该文件中的最新信息，不是历史时点的股票资料。
+依赖：pandas、numpy、pyarrow、matplotlib、tqdm。
 
-多头方向与完整区间报告一致：IC 均值大于 0 取因子值最高组（10 组时为 G10），否则取 G1；历史清单是按当前报告方向还原的模型持仓，并非实盘成交记录。下一日目标按信号日所属月份的市值规则筛选股票，不依赖未来行情或交易日历；若下一交易日跨月，需按新月份股票池重新确认。CSV 日期采用 `YYYYMMDD`，股票代码按文本读取以保留前导零。
+## 目录结构
 
-因子构建中的 `update_all` 设为 `1` 会重新计算并覆盖所选因子文件，保留其他因子文件；因子评估设为 `1` 会清空相应评估输出目录。设为 `0` 则执行增量更新。运行前请确认配置的输入、输出路径和日期范围。
+```text
+main.py                  # 入口与配置加载
+config/                  # 三类任务的配置
+update_data/             # 行情整理、复权、生成回测数据
+construct_asset_pool/    # 下载股票基础信息与交易日历（单独运行）
+factors/construction/    # 因子构建器与因子实现（高频 / 中频）
+factors/evaluation/      # 单因子与批量评估、相关性分析、HTML 报告
+factor_list.csv          # 高频因子清单及算子公式
+```
+
+## 数据更新
+
+从 `new_data_dir` 读取 `daily_minutes.csv`、`stock_exrights.csv`、`limit_price.csv`、`stock_st_status.csv`、`mkcap.csv` 和 `fundamentals_quarterly.csv`，结果写到 `output_dir`：
+
+| 输出 | 内容 |
+| --- | --- |
+| `stock_minutes/<年>/<日期>.parquet` | 按交易日拆分的分钟行情 |
+| `stock_daily/daily_stock_data.parquet` | 后复权日线 OHLC，附当日总市值 `mkcap`（元） |
+| `stock_daily/daily_stock_data_10am.parquet` | 每日 10:00 后复权价格，作为回测成交价 |
+| `fundamentals/financial_data.parquet` | 季度财报，流量变量转为 TTM，以公告日为 `date` |
+| `fundamentals/`、`limit_price/`、`stock_st_status/` | 日度和月度市值、涨跌停价、ST 状态 |
+
+## 因子构建
+
+`construction_mode` 取 `high`（高频）或 `middle`（中频）。`factor_list` 和 `middle_factor_list` 分别列出要计算的高频、中频因子，留空表示计算对应目录下的全部因子。
+
+| 类型 | 输入 | 因子举例 |
+| --- | --- | --- |
+| 高频 | 当日分钟行情 | 分时段动量、开盘和尾盘成交占比、分钟收益偏度和峰度、量价相关性、上行和下行波动率等，完整清单见 [factor_list.csv](factor_list.csv) |
+| 中频 | 历史日线和财务数据 | `LnSize`、`BM`、`MarketBeta`、`Mom1m`、`Mom1y`、`AmihudIlliquidity` 及其变体、`PastorStambaughGamma` |
+
+- 股票池剔除 ST 股，以及连续交易不满 250 天的股票。
+- 每个因子额外输出 5、20、60、120、250 日滚动均值列（如 `Mom1m_250_m`）。评估时，这些列也作为独立因子。
+- 新增因子的方法：在 [high_freq_factor_calculation/](factors/construction/high_freq_factor_calculation/) 或 [middle_freq_factor_calculation/](factors/construction/middle_freq_factor_calculation/) 下新建与类名同名的文件，继承 `_BaseHighFreqFactor` 或 `_BaseMiddleFreqFactor`，实现 `calculate()`，返回 `code`、`date` 和因子列。构建器按文件名自动注册。
+
+## 因子评估
+
+`evaluation_mode` 设为 `single` 时，只评估 `specified_column` 指定的一列；设为 `multi` 时，评估因子目录下的所有列。评估口径如下：
+
+- **股票池**：按 `stock_board`（`main board` 或 `all`）筛选板块，再按上月末市值每日保留最小的 `stock_pool` 只股票。
+- **收益**：因子值滞后一天使用，当日 10:00 买入，持有到下一交易日 10:00。
+- **分组**：每日按因子值等分为 `group_number` 组，计算各组收益、IC、RankIC 和换手率。IC 均值为正时做多因子值最高的组，否则做多最低的组。不计交易成本。
+- **多因子分析**：批量模式还会计算全部原始因子的截面相关性矩阵，并对 `base_factor_list` 中的基础因子做截面回归，计算它们对其他因子的解释度 R²。
+
+输出默认位于 `a_share_market_data/factors_evaluation_output/`：
+
+| 路径 | 内容 |
+| --- | --- |
+| `numerical_output/<因子列>.csv` | 每日分组收益、IC、RankIC、股票数、换手率 |
+| `numerical_output/factor_comparison.csv` | 批量模式的指标汇总 |
+| `visualization_output/<因子列>_report.html` | 单因子交互式报告 |
+| `visualization_output/multi_factor_evaluation/multi_factor_evaluation_report.html` | 批量模式报告：指标对比、相关性矩阵、R² 曲线 |
+| `stock_list/<因子列>.csv` | 历史每日多头持仓 |
+| `stock_list/next_day/<因子列>.csv` | 由最新收盘信号得到的下一交易日目标持仓 |
+
+持仓清单会附上 `__daily_data_update/stock_info.csv` 中的股票名称、行业等信息。
+
+## 结果示例
+
+### AmihudIlliquidity 单因子报告
+
+Amihud 非流动性 = 日收益率绝对值 / 当日成交额。评估区间为 2020-01-02 至 2026-09-17，样本为主板市值最小的 2000 只股票，每日分 10 组：
+
+| IC 均值 | RankIC 均值 | ICIR | 多头（G10）年化收益 | 多空年化收益 | 多头日均换手率 |
+| --- | --- | --- | --- | --- | --- |
+| 0.011 | 0.030 | 0.14 | 31.3% | 29.4% | 61.8% |
+
+![AmihudIlliquidity 各组累计收益](docs/images/amihud_group_cumulative.png)
+
+![AmihudIlliquidity 各组年化收益](docs/images/amihud_group_annual_returns.png)
+
+从 G1 到 G10，年化收益单调上升，非流动性越高的组收益越高。以上收益未计手续费和滑点；多头组日均换手率约 62%，扣除成本后的实际收益会明显更低。
+
+### 因子相关性矩阵
+
+下图取自批量评估报告，数值为每日截面 Pearson 相关系数的时间均值。前 4 个是基础因子 `MarketBeta`、`LnSize`、`BM`、`Mom1y`。
+
+![因子相关性矩阵](docs/images/factor_correlation_matrix.png)
+
+Amihud 类因子之间高度相关（如 `AmihudIlliquidity` 与 `TurnoverAmihud` 为 0.76）。其中 `AmihudIlliquidity` 和 `HighLowAmihud` 与市值明显负相关，分别为 −0.34 和 −0.51。
