@@ -1,24 +1,22 @@
-"""Generate a self-contained HTML report from daily factor evaluation results."""
+"""按因子合并原始值和各滚动均值列的每日评估结果，生成一份离线 HTML 报告。"""
 
 import argparse
-import io
 import json
 import sys
 from html import escape
 from pathlib import Path
 
-import matplotlib.dates as mdates
-from matplotlib.backends.backend_svg import FigureCanvasSVG
-from matplotlib.figure import Figure
-from matplotlib.ticker import PercentFormatter
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 
 class ResultsVisualizer:
     COLORS = ["#2563eb", "#06a6a0", "#e7a32e", "#9764d9", "#ed6976"]
     # 超过五组时用蓝红分歧色：G1–G5 蓝色由深到浅，G6–G10 红色由浅到深，两端（多空组）颜色最深。
     DIVERGING_COLORS = ["#104281", "#1c5cab", "#2a78d6", "#5598e7", "#86b6ef", "#ea9a93", "#dd716a", "#c74845", "#9e3432", "#762221"]
+    # 窗口对比图的颜色按因子文件中的列顺序固定分配（原始值、由短到长的滚动均值列），相邻颜色已校验色盲可分。
+    WINDOW_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
 
     @staticmethod
     def _default_output_dir():
@@ -70,7 +68,6 @@ class ResultsVisualizer:
             raise ValueError("At least one valid IC value is required to select the long-short direction.")
         self.factor_results = data
         self.group_returns = data[self.GROUPS].dropna()
-        self.group_counts = data.reindex(columns=count_columns)
         if self.group_returns.empty:
             raise ValueError("No dates with valid returns for all five groups.")
         self.ic_mean = data["IC"].mean()
@@ -112,71 +109,6 @@ class ResultsVisualizer:
             return "—"
         return f"{value:.2%}" if percent else f"{value:.3f}"
 
-    def _performance_table(self, rows, label, turnovers=None):
-        columns = [label, "有效交易日", "日均股票数量", "区间收益", "年化收益", "年化波动率", "最大回撤", "Sharpe"]
-        records = []
-        for name, returns, counts in rows:
-            metrics = self._performance(returns)
-            average_count = counts.reindex(returns.dropna().index).mean()
-            records.append([name, str(metrics[0]), "—" if pd.isna(average_count) else f"{average_count:.2f}"] + [self._format(value, percent=i < 5) for i, value in enumerate(metrics[1:], 1)])
-        table = pd.DataFrame(records, columns=columns)
-        if turnovers is not None:
-            table.insert(3, "平均换手率", [self._format(value, percent=True) for value in turnovers])
-        return table.to_html(index=False, border=0, classes="metrics", escape=True)
-
-    def _ic_table(self):
-        records = []
-        for column, label in [("IC", "IC"), ("rankIC", "RankIC")]:
-            values = self.factor_results[column].dropna()
-            deviation = values.std(ddof=1)
-            ratio = values.mean() / deviation if deviation > 0 else np.nan
-            records.append([label, len(values), self._format(values.mean()), self._format(deviation),
-                            self._format(ratio), self._format(ratio * np.sqrt(self.periods_per_year)),
-                            self._format((values > 0).mean() if len(values) else np.nan, percent=True)])
-        return pd.DataFrame(records, columns=["指标", "有效观测数", "均值", "标准差", "IR（均值 / 标准差）", "年化 IR", "大于零占比"]).to_html(index=False, border=0, classes="metrics")
-
-    def _chart(self, data, ylabel, percent=False, zero=False):
-        figure = Figure(figsize=(12, 3.8), layout="constrained", facecolor="white")
-        axis = figure.subplots()
-        for (label, values), color in zip(data.items(), self.COLORS):
-            axis.plot(values.index, values, label=label, color=color, linewidth=1.3, alpha=0.9)
-        if zero:
-            axis.axhline(0, color="#94a3b8", linewidth=0.8, linestyle="--")
-        axis.set_ylabel(ylabel, color="#64748b", fontsize=10)
-        axis.grid(axis="y", color="#e8edf5", linewidth=0.7)
-        axis.spines[["top", "right"]].set_visible(False)
-        axis.spines[["left", "bottom"]].set_color("#dce3ed")
-        axis.tick_params(colors="#64748b", labelsize=9)
-        locator = mdates.AutoDateLocator(minticks=3, maxticks=9)
-        axis.xaxis.set_major_locator(locator)
-        axis.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
-        if percent:
-            axis.yaxis.set_major_formatter(PercentFormatter(1))
-        axis.legend(loc="upper left", frameon=False, ncol=len(data), fontsize=9)
-        buffer = io.StringIO()
-        FigureCanvasSVG(figure).print_svg(buffer)
-        svg = buffer.getvalue()
-        return svg[svg.index("<svg"):]
-
-    def _annual_return_chart(self):
-        annual_returns = [self._performance(self.group_returns[group])[2] for group in self.GROUPS]
-        figure = Figure(figsize=(12, 3.8), layout="constrained", facecolor="white")
-        axis = figure.subplots()
-        bars = axis.bar([f"G{group.split('_')[1]}" for group in self.GROUPS], annual_returns, color=self.group_colors, width=0.55, zorder=3)
-        axis.bar_label(bars, labels=[self._format(value, percent=True) for value in annual_returns], padding=5, fontsize=10, color="#172b4d")
-        axis.axhline(0, color="#94a3b8", linewidth=0.8)
-        axis.set_ylabel("Annualized return", color="#64748b", fontsize=10)
-        axis.yaxis.set_major_formatter(PercentFormatter(1))
-        axis.grid(axis="y", color="#e8edf5", linewidth=0.7)
-        axis.spines[["top", "right"]].set_visible(False)
-        axis.spines[["left", "bottom"]].set_color("#dce3ed")
-        axis.tick_params(colors="#64748b", labelsize=10)
-        axis.margins(y=0.18)
-        buffer = io.StringIO()
-        FigureCanvasSVG(figure).print_svg(buffer)
-        svg = buffer.getvalue()
-        return svg[svg.index("<svg"):]
-
     @staticmethod
     def _report_script():
         """Keep interactive calculations local so the exported report works offline."""
@@ -184,13 +116,23 @@ class ResultsVisualizer:
 class FactorReport {
     constructor(data) {
         this.data = data;
-        this.colors = data.colors;
+        this.dates = data.dates;
         this.names = data.names;
+        // 每个窗口的数据按列展开，series[列名] 与 dates 一一对应，缺失为 null。
+        this.windows = data.windows.map(item => {
+            const series = {};
+            data.columns.forEach((column, index) => series[column] = item.data.map(row => row[index]));
+            return {label: item.label, column: item.column, color: item.color, series};
+        });
+        this.current = 0;
+        this.page = 'overview';
+        this.charts = {};
+        this.tooltip = document.getElementById('tooltip');
         this.start = document.getElementById('range-start');
         this.end = document.getElementById('range-end');
         this.pan = document.getElementById('range-pan');
-        this.start.max = this.end.max = data.rows.length - 1;
-        this.end.value = data.rows.length - 1;
+        this.start.max = this.end.max = this.dates.length - 1;
+        this.end.value = this.dates.length - 1;
         for (const slider of [this.start, this.end]) {
             slider.addEventListener('input', () => {
                 if (+this.start.value > +this.end.value) {
@@ -207,28 +149,62 @@ class FactorReport {
         });
         document.getElementById('range-reset').addEventListener('click', () => {
             this.start.value = 0;
-            this.end.value = data.rows.length - 1;
+            this.end.value = this.dates.length - 1;
             this.schedule();
         });
         for (const button of document.querySelectorAll('[role="tab"]')) {
-            button.addEventListener('click', () => {
-                for (const tab of document.querySelectorAll('[role="tab"]')) {
-                    const active = tab === button;
-                    tab.setAttribute('aria-selected', String(active));
-                    document.getElementById(tab.getAttribute('aria-controls')).hidden = !active;
-                }
-                this.updateCards(button.id === 'tab-groups' ? this.selected : data.rows);
-                document.getElementById('card-scope').textContent = button.id === 'tab-groups'
-                    ? '指标范围：分组结果所选区间' : '指标范围：完整展示区间';
-            });
+            button.addEventListener('click', () => this.show(button.dataset.page));
         }
-        this.renderGroups();
-        this.renderYears();
+        // 顶栏窗口按钮和对比表中的窗口名都带 data-window：在对比页点击会跳到该窗口的详情页。
+        document.addEventListener('click', event => {
+            const button = event.target.closest('[data-window]');
+            if (!button) return;
+            this.current = +button.dataset.window;
+            if (this.page === 'overview') this.show('window'); else this.render();
+        });
+        // 打印前渲染全部页面，隐藏页也有完整图表。
+        addEventListener('beforeprint', () => this.render(true));
+        this.render();
+    }
+
+    show(page) {
+        this.page = page;
+        for (const tab of document.querySelectorAll('[role="tab"]')) {
+            const active = tab.dataset.page === page;
+            tab.setAttribute('aria-selected', String(active));
+            document.getElementById('page-' + tab.dataset.page).hidden = !active;
+        }
+        document.getElementById('window-picker').hidden = page === 'overview';
+        document.getElementById('range-controls').hidden = page === 'years';
+        this.render();
+        // 从页面下方切换时回到导航栏位置，新页面从头开始显示。
+        const header = document.querySelector('header');
+        if (scrollY > header.offsetTop + header.offsetHeight) scrollTo({top: header.offsetTop + header.offsetHeight});
     }
 
     schedule() {
         cancelAnimationFrame(this.frame);
-        this.frame = requestAnimationFrame(() => this.renderGroups());
+        this.frame = requestAnimationFrame(() => this.render());
+    }
+
+    render(all = false) {
+        const start = +this.start.value;
+        const end = +this.end.value;
+        this.pan.max = this.dates.length - (end - start + 1);
+        this.pan.value = start;
+        this.pan.disabled = +this.pan.max === 0;
+        document.getElementById('start-date').textContent = this.dates[start];
+        document.getElementById('end-date').textContent = this.dates[end];
+        document.getElementById('range-summary').textContent = `${this.dates[start]} — ${this.dates[end]} · ${end - start + 1} 个评估日`;
+        for (const button of document.querySelectorAll('#window-picker [data-window]')) {
+            button.setAttribute('aria-pressed', String(+button.dataset.window === this.current));
+        }
+        for (const element of document.querySelectorAll('.window-name')) {
+            element.textContent = this.windows[this.current].label;
+        }
+        if (all || this.page === 'overview') this.renderOverview(start, end);
+        if (all || this.page === 'window') this.renderWindow(start, end);
+        if (all || this.page === 'years') this.renderYears();
     }
 
     mean(values) {
@@ -237,25 +213,25 @@ class FactorReport {
     }
 
     deviation(values) {
-        if (values.length < 2) return NaN;
-        const average = this.mean(values);
-        return Math.sqrt(values.reduce((sum, value) => sum + (value - average) ** 2, 0) / (values.length - 1));
+        const valid = values.filter(value => value !== null && Number.isFinite(value));
+        if (valid.length < 2) return NaN;
+        const average = this.mean(valid);
+        return Math.sqrt(valid.reduce((sum, value) => sum + (value - average) ** 2, 0) / (valid.length - 1));
     }
 
-    format(value, percent = false) {
-        return value !== null && Number.isFinite(value) ? (value * (percent ? 100 : 1)).toFixed(percent ? 2 : 3) + (percent ? '%' : '') : '—';
+    format(value, percent = false, digits = null) {
+        if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+        const places = digits === null ? (percent ? 2 : 3) : digits;
+        return (value * (percent ? 100 : 1)).toFixed(places) + (percent ? '%' : '');
     }
 
-    complete(rows) {
-        return rows.filter(row => this.names.every((_, index) => row['group_' + (index + 1)] !== null));
+    escape(text) {
+        return String(text).replace(/[&<>"]/g, character => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[character]);
     }
 
-    direction(rows) {
-        const mean = this.mean(rows.map(row => row.IC));
-        return Number.isFinite(mean) ? (mean > 0 ? this.names.length - 1 : 0) : null;
-    }
-
-    performance(returns) {
+    // 输入与评估日对齐、缺失为 null 的日收益；指标只用有效日，曲线在缺失日保持持平，首项为区间起点。
+    performance(values) {
+        const returns = values.filter(value => value !== null);
         if (!returns.length || returns.some(value => value < -1)) {
             return {metrics: [returns.length, NaN, NaN, NaN, NaN, NaN], cumulative: [], drawdown: []};
         }
@@ -264,12 +240,14 @@ class FactorReport {
         let minimum = 0;
         const cumulative = [0];
         const drawdown = [0];
-        for (const value of returns) {
-            wealth *= 1 + value;
-            peak = Math.max(peak, wealth);
+        for (const value of values) {
+            if (value !== null) {
+                wealth *= 1 + value;
+                peak = Math.max(peak, wealth);
+                minimum = Math.min(minimum, wealth / peak - 1);
+            }
             cumulative.push(wealth - 1);
             drawdown.push(wealth / peak - 1);
-            minimum = Math.min(minimum, wealth / peak - 1);
         }
         const volatility = this.deviation(returns);
         const scale = Math.sqrt(this.data.periods);
@@ -281,13 +259,49 @@ class FactorReport {
         };
     }
 
-    updateCards(rows) {
-        const ic = rows.map(row => row.IC).filter(value => value !== null);
-        const deviation = this.deviation(ic);
-        const preferred = this.direction(rows);
-        const sharpe = preferred === null ? NaN : this.performance(this.complete(rows).map(row => row['group_' + (preferred + 1)])).metrics[5];
-        [this.mean(ic), this.mean(rows.map(row => row.rankIC)), deviation > 0 ? this.mean(ic) / deviation : NaN, sharpe]
-            .forEach((value, index) => document.getElementById('card-' + index).textContent = this.format(value));
+    cumulativeSum(values) {
+        let total = 0;
+        const result = [0];
+        for (const value of values) {
+            if (value !== null) total += value;
+            result.push(total);
+        }
+        return result;
+    }
+
+    // 返回 [有效观测数, 均值, 标准差, IR, 年化 IR, 大于零占比]。
+    icStats(values) {
+        const valid = values.filter(value => value !== null);
+        const deviation = this.deviation(valid);
+        const ratio = deviation > 0 ? this.mean(valid) / deviation : NaN;
+        return [valid.length, this.mean(valid), deviation, ratio, ratio * Math.sqrt(this.data.periods),
+            valid.length ? valid.filter(value => value > 0).length / valid.length : NaN];
+    }
+
+    // 计算一个窗口在 [start, end] 内的全部结果；多空方向由区间 IC 均值确定，任一组收益缺失的日期在所有组中共同剔除。
+    analyze(item, start, end) {
+        const pick = column => (item.series[column] || []).slice(start, end + 1);
+        const groupColumns = this.names.map((_, index) => 'group_' + (index + 1));
+        const dates = this.dates.slice(start, end + 1);
+        const raw = groupColumns.map(pick);
+        const complete = dates.map((_, day) => raw.every(values => values[day] !== null && values[day] !== undefined));
+        const onComplete = column => {
+            const values = pick(column);
+            return dates.map((_, day) => complete[day] && values[day] !== undefined ? values[day] : null);
+        };
+        const ic = pick('IC');
+        const icMean = this.mean(ic);
+        const preferred = Number.isFinite(icMean) ? (icMean > 0 ? this.names.length - 1 : 0) : null;
+        const short = preferred === null ? null : this.names.length - 1 - preferred;
+        const groups = groupColumns.map(onComplete);
+        const spread = groups[0].map((value, day) => preferred === null || value === null ? null : groups[preferred][day] - groups[short][day]);
+        return {
+            dates, ic, rankIC: pick('rankIC'), preferred, short, complete, groups, spread,
+            counts: groupColumns.map(column => onComplete(column + '_count')),
+            turnovers: groupColumns.map(column => onComplete(column + '_turnover')),
+            performances: groups.map(values => this.performance(values)),
+            longShort: this.performance(spread)
+        };
     }
 
     table(headers, rows) {
@@ -297,14 +311,36 @@ class FactorReport {
 
     metricRow(label, returns, counts, turnover) {
         const metrics = this.performance(returns).metrics;
-        const row = [label, metrics[0], this.format(this.mean(counts))];
-        if (turnover !== undefined) row.push(this.format(this.mean(turnover), true));
-        return row.concat(metrics.slice(1).map((value, index) => this.format(value, index < 4)));
+        return [label, metrics[0], this.format(this.mean(counts), false, 1), this.format(this.mean(turnover), true)]
+            .concat(metrics.slice(1).map((value, index) => this.format(value, index < 4)));
     }
 
-    // Draw SVG directly: no CDN, network requests, or external chart dependency.
-    chart(target, labels, series, percent = true, bars = false) {
+    // 热力表：正值为红、负值为蓝，颜色深浅与表内最大绝对值成比例；row.long 为需要加框的列序号。
+    heatTable(corner, headers, rows, percent) {
+        let scale = 0;
+        for (const row of rows) {
+            for (const value of row.values) {
+                if (Number.isFinite(value)) scale = Math.max(scale, Math.abs(value));
+            }
+        }
+        let html = `<table class="metrics heatmap"><thead><tr><th>${corner}</th>` + headers.map(value => `<th>${this.escape(value)}</th>`).join('') + '</tr></thead><tbody>';
+        for (const row of rows) {
+            html += `<tr><td>${this.escape(row.label)}</td>`;
+            row.values.forEach((value, index) => {
+                const text = this.format(value, percent);
+                const alpha = Number.isFinite(value) && scale > 0 ? Math.abs(value) / scale * 0.85 : 0;
+                const color = value > 0 ? '199, 72, 69' : '28, 92, 171';
+                html += `<td class="heat${index === row.long ? ' long' : ''}" style="background: rgba(${color}, ${alpha.toFixed(3)}); color: ${alpha > 0.5 ? '#ffffff' : '#172b4d'}" title="${this.escape(row.label)} · ${this.escape(headers[index])}：${text}">${text}</td>`;
+            });
+            html += '</tr>';
+        }
+        return html + '</tbody></table>';
+    }
+
+    // 直接绘制 SVG，不依赖 CDN 或外部图表库；折线图带十字准线和提示框，两条以上的线显示图例。
+    chart(target, labels, series, options = {}) {
         const container = document.getElementById(target);
+        const percent = options.percent !== false;
         let low = 0;
         let high = 0;
         let count = 0;
@@ -318,38 +354,47 @@ class FactorReport {
         }
         if (!count) {
             container.innerHTML = '<p class="empty">所选区间没有可用数据。</p>';
+            delete this.charts[target];
             return;
         }
-        const padding = (high - low || 0.01) * 0.15;
+        const padding = (high - low || 0.01) * (options.bars ? 0.15 : 0.04);
         low -= padding;
         high += padding;
-        const left = 100, top = 48, width = 990, height = 260;
-        const x = index => left + (bars ? (index + 0.5) / labels.length : index / Math.max(labels.length - 1, 1)) * width;
+        // 纵轴刻度间隔取 1、2、5 × 10^k，上下界落在整刻度上。
+        const rough = (high - low) / 4;
+        const magnitude = 10 ** Math.floor(Math.log10(rough));
+        const step = [1, 2, 5, 10].map(multiple => multiple * magnitude).find(value => value >= rough);
+        const digits = Math.max(0, -Math.floor(Math.log10(step * (percent ? 100 : 1)) + 1e-9));
+        low = Math.floor(low / step) * step;
+        high = Math.ceil(high / step) * step;
+        const left = 84, top = 14, width = 990, height = 270;
+        const x = index => left + (options.bars ? (index + 0.5) / labels.length : index / Math.max(labels.length - 1, 1)) * width;
         const y = value => top + (high - value) / (high - low) * height;
-        // 组数较多时收窄柱宽和图例间距，避免柱子相连、图例超出画布。
-        const barWidth = Math.min(96, width / labels.length * 0.6);
-        const legendGap = Math.min(150, width / series.length);
-        let svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 365" role="img" aria-label="' + container.dataset.label + '">';
-        for (let index = 0; index <= 4; index++) {
-            const value = low + (high - low) * index / 4;
-            svg += `<line x1="${left}" x2="${left + width}" y1="${y(value)}" y2="${y(value)}" stroke="#e8edf5"/>`;
-            svg += `<text x="${left - 12}" y="${y(value) + 4}" text-anchor="end">${this.format(value, percent)}</text>`;
+        let legend = '';
+        if (series.length > 1) {
+            legend = '<div class="legend">' + series.map(item => `<span><i class="key" style="background: ${item.color}"></i>${this.escape(item.name)}</span>`).join('') + '</div>';
         }
-        svg += `<line x1="${left}" x2="${left + width}" y1="${y(0)}" y2="${y(0)}" stroke="#94a3b8" stroke-dasharray="4 4"/>`;
-        const ticks = Math.min(labels.length, bars ? 5 : 7);
+        let svg = `<svg viewBox="0 0 1120 320" role="img" aria-label="${this.escape(container.dataset.label || '')}">`;
+        for (let index = 0; index <= Math.round((high - low) / step); index++) {
+            const value = Math.abs(low + index * step) < step / 1e6 ? 0 : low + index * step;
+            svg += `<line class="grid" x1="${left}" x2="${left + width}" y1="${y(value)}" y2="${y(value)}"/>`;
+            svg += `<text x="${left - 12}" y="${y(value) + 4}" text-anchor="end">${this.format(value, percent, digits)}</text>`;
+        }
+        svg += `<line class="zero" x1="${left}" x2="${left + width}" y1="${y(0)}" y2="${y(0)}"/>`;
+        const ticks = options.bars ? labels.length : Math.min(labels.length, 7);
         for (let tick = 0; tick < ticks; tick++) {
             const index = ticks === 1 ? 0 : Math.round(tick * (labels.length - 1) / (ticks - 1));
-            svg += `<text x="${x(index)}" y="338" text-anchor="middle">${labels[index]}</text>`;
+            svg += `<text x="${x(index)}" y="${top + height + 28}" text-anchor="middle">${this.escape(labels[index])}</text>`;
         }
-        series.forEach((item, seriesIndex) => {
-            const color = this.colors[seriesIndex % this.colors.length];
-            if (bars) {
-                item.values.forEach((value, index) => {
-                    if (!Number.isFinite(value)) return;
-                    svg += `<rect x="${x(index) - barWidth / 2}" y="${Math.min(y(0), y(value))}" width="${barWidth}" height="${Math.abs(y(value) - y(0))}" fill="${this.colors[index % this.colors.length]}"><title>${labels[index]}: ${this.format(value, percent)}</title></rect>`;
-                    svg += `<text x="${x(index)}" y="${value >= 0 ? y(value) - 9 : y(value) + 18}" text-anchor="middle">${this.format(value, percent)}</text>`;
-                });
-            } else {
+        if (options.bars) {
+            const barWidth = Math.min(72, width / labels.length * 0.6);
+            series[0].values.forEach((value, index) => {
+                if (!Number.isFinite(value)) return;
+                svg += `<rect x="${x(index) - barWidth / 2}" y="${Math.min(y(0), y(value))}" width="${barWidth}" height="${Math.max(Math.abs(y(value) - y(0)), 1)}" rx="3" fill="${this.data.colors[index % this.data.colors.length]}"><title>${this.escape(labels[index])}：${this.format(value, percent)}</title></rect>`;
+                svg += `<text class="value" x="${x(index)}" y="${value >= 0 ? y(value) - 8 : y(value) + 17}" text-anchor="middle">${this.format(value, percent)}</text>`;
+            });
+        } else {
+            for (const item of series) {
                 let path = '';
                 let move = true;
                 item.values.forEach((value, index) => {
@@ -357,72 +402,177 @@ class FactorReport {
                     path += `${move ? 'M' : 'L'}${x(index).toFixed(2)},${y(value).toFixed(2)} `;
                     move = false;
                 });
-                svg += `<path d="${path}" fill="none" stroke="${color}" stroke-width="1.8"><title>${item.name}</title></path>`;
-                svg += `<line x1="${left + seriesIndex * legendGap}" x2="${left + 22 + seriesIndex * legendGap}" y1="22" y2="22" stroke="${color}" stroke-width="3"/>`;
-                svg += `<text x="${left + 30 + seriesIndex * legendGap}" y="26">${item.name}</text>`;
+                svg += `<path d="${path}" fill="none" stroke="${item.color}" stroke-width="2" stroke-linejoin="round"/>`;
             }
-        });
-        container.innerHTML = svg + '</svg>';
+            svg += `<line class="crosshair" x1="0" x2="0" y1="${top}" y2="${top + height}" visibility="hidden"/>`;
+        }
+        container.innerHTML = legend + svg + '</svg>';
+        this.charts[target] = {labels, series, percent, left, width};
+        if (!options.bars && !container.dataset.hover) {
+            container.dataset.hover = '1';
+            container.addEventListener('pointermove', event => this.hover(container, event));
+            container.addEventListener('pointerleave', () => {
+                this.tooltip.hidden = true;
+                const line = container.querySelector('.crosshair');
+                if (line) line.setAttribute('visibility', 'hidden');
+            });
+        }
     }
 
-    renderGroups() {
-        const start = +this.start.value;
-        const end = +this.end.value;
-        this.selected = this.data.rows.slice(start, end + 1);
-        const rows = this.complete(this.selected);
-        const preferred = this.direction(this.selected);
-        const short = preferred === null ? null : this.names.length - 1 - preferred;
-        const groups = this.names.map((_, index) => rows.map(row => row['group_' + (index + 1)]));
-        const performances = groups.map(returns => this.performance(returns));
-        const spread = preferred === null ? [] : groups[preferred].map((value, index) => value - groups[short][index]);
-        const invalidSpread = spread.some(value => value < -1);
-        const longShort = this.performance(spread);
-        this.pan.max = this.data.rows.length - (end - start + 1);
-        this.pan.value = start;
-        this.pan.disabled = +this.pan.max === 0;
-        for (const [id, index] of [['start-date', start], ['end-date', end]]) {
-            document.getElementById(id).textContent = this.data.rows[index].date;
+    // 准线吸附到最近的评估日，提示框列出该日全部曲线的数值；名称用 textContent 写入。
+    hover(container, event) {
+        const chart = this.charts[container.id];
+        const svg = container.querySelector('svg');
+        if (!chart || !svg) return;
+        const box = svg.getBoundingClientRect();
+        const count = chart.labels.length;
+        const position = ((event.clientX - box.left) / box.width * 1120 - chart.left) / chart.width;
+        const index = Math.max(0, Math.min(count - 1, Math.round(position * (count - 1))));
+        const x = chart.left + index / Math.max(count - 1, 1) * chart.width;
+        const line = svg.querySelector('.crosshair');
+        line.setAttribute('x1', x);
+        line.setAttribute('x2', x);
+        line.setAttribute('visibility', 'visible');
+        const title = document.createElement('div');
+        title.className = 'tooltip-title';
+        title.textContent = chart.labels[index];
+        this.tooltip.replaceChildren(title);
+        for (const item of chart.series) {
+            const row = document.createElement('div');
+            const key = document.createElement('i');
+            key.className = 'key';
+            key.style.background = item.color;
+            const value = document.createElement('strong');
+            value.textContent = this.format(item.values[index], chart.percent);
+            const name = document.createElement('span');
+            name.textContent = item.name;
+            row.append(key, value, name);
+            this.tooltip.append(row);
         }
-        document.getElementById('range-summary').textContent = `${this.data.rows[start].date} — ${this.data.rows[end].date} · ${this.selected.length} 个评估日 · ${rows.length} 个完整收益日 · 剔除 ${this.selected.length - rows.length} 个收益缺失日`;
+        this.tooltip.hidden = false;
+        const size = this.tooltip.getBoundingClientRect();
+        this.tooltip.style.left = (event.clientX + 16 + size.width > innerWidth ? event.clientX - 16 - size.width : event.clientX + 16) + 'px';
+        this.tooltip.style.top = Math.min(event.clientY + 16, innerHeight - size.height - 8) + 'px';
+    }
+
+    renderOverview(start, end) {
+        const results = this.windows.map(item => this.analyze(item, start, end));
+        // 每列依次为：列名、是否百分比、最优值规则（abs 绝对值最大、max 最大、min 最小、空为不比较）。
+        const columns = [['IC 均值', false, 'abs'], ['RankIC 均值', false, 'abs'], ['ICIR', false, 'abs'], ['RankICIR', false, 'abs'], ['IC &gt; 0 占比', true, ''],
+            ['多空年化收益', true, 'max'], ['多空 Sharpe', false, 'max'], ['多空最大回撤', true, 'max'], ['多头年化收益', true, 'max'], ['多头 Sharpe', false, 'max'], ['多头平均换手率', true, 'min']];
+        const values = results.map(result => {
+            const ic = this.icStats(result.ic);
+            const rankIC = this.icStats(result.rankIC);
+            const long = result.preferred === null ? [] : result.performances[result.preferred].metrics;
+            const turnover = result.preferred === null ? NaN : this.mean(result.turnovers[result.preferred]);
+            return [ic[1], rankIC[1], ic[3], rankIC[3], ic[5], result.longShort.metrics[2], result.longShort.metrics[5], result.longShort.metrics[4], long[2], long[5], turnover];
+        });
+        const best = columns.map((column, index) => {
+            let bestWindow = -1;
+            let bestScore = -Infinity;
+            values.forEach((row, window) => {
+                if (!column[2] || !Number.isFinite(row[index])) return;
+                const score = column[2] === 'abs' ? Math.abs(row[index]) : column[2] === 'min' ? -row[index] : row[index];
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestWindow = window;
+                }
+            });
+            return values.length > 1 ? bestWindow : -1;
+        });
+        let html = '<table class="metrics compare"><thead><tr><th>窗口</th><th>完整收益日</th><th>多头组</th>' + columns.map(column => `<th>${column[0]}</th>`).join('') + '</tr></thead><tbody>';
+        results.forEach((result, window) => {
+            const item = this.windows[window];
+            html += `<tr><td><button type="button" class="window-link" data-window="${window}" title="${this.escape(item.column)}"><i class="key" style="background: ${item.color}"></i>${this.escape(item.label)}</button></td>`;
+            html += `<td>${result.complete.filter(Boolean).length}</td><td>${result.preferred === null ? '—' : this.names[result.preferred]}</td>`;
+            values[window].forEach((value, index) => {
+                html += `<td${best[index] === window ? ' class="best"' : ''}>${this.format(value, columns[index][1])}</td>`;
+            });
+            html += '</tr>';
+        });
+        document.getElementById('compare-table').innerHTML = html + '</tbody></table>';
+        document.getElementById('group-heatmap').innerHTML = this.heatTable('窗口', this.names, results.map((result, window) => ({
+            label: this.windows[window].label, values: result.performances.map(performance => performance.metrics[2]), long: result.preferred
+        })), true);
+        const labels = ['起点', ...results[0].dates];
+        const windowSeries = values => results.map((result, window) => ({name: this.windows[window].label, color: this.windows[window].color, values: values(result)}));
+        this.chart('compare-ls', labels, windowSeries(result => result.longShort.cumulative));
+        this.chart('compare-long', labels, windowSeries(result => result.preferred === null ? [] : result.performances[result.preferred].cumulative));
+        this.chart('compare-ic', labels, windowSeries(result => this.cumulativeSum(result.ic)), {percent: false});
+        this.chart('compare-rankic', labels, windowSeries(result => this.cumulativeSum(result.rankIC)), {percent: false});
+    }
+
+    renderWindow(start, end) {
+        const item = this.windows[this.current];
+        const result = this.analyze(item, start, end);
+        const preferred = result.preferred;
+        const short = result.short;
+        const long = preferred === null ? [] : result.performances[preferred].metrics;
+        const ic = this.icStats(result.ic);
+        const rankIC = this.icStats(result.rankIC);
+        [ic[1], rankIC[1], ic[3], result.longShort.metrics[2], long[2], long[5]].forEach((value, index) => {
+            document.getElementById('card-' + index).textContent = this.format(value, index === 3 || index === 4);
+        });
+        const completeDays = result.complete.filter(Boolean).length;
+        document.getElementById('window-summary').textContent = `因子列 ${item.column} · ${result.dates.length} 个评估日 · ${completeDays} 个完整收益日 · 剔除 ${result.dates.length - completeDays} 个收益缺失日`;
         document.getElementById('direction-note').textContent = preferred === null
             ? '所选区间没有有效 IC，无法确定多头组和多空方向。'
-            : `当前方向：${this.names[preferred]} − ${this.names[short]}，由所选区间 IC 均值确定。` + (invalidSpread ? '该区间多空单日亏损超过 100%，不计算多空复利指标和曲线。' : '');
-        const records = groups.map((returns, index) => this.metricRow(this.names[index] + (index === preferred ? ' · 多头' : ''), returns,
-            rows.map(row => row['group_' + (index + 1) + '_count']), rows.map(row => row['group_' + (index + 1) + '_turnover'])));
-        records.push(this.metricRow('Long-short', spread, preferred === null ? [] : rows.map(row => {
-            const longCount = row['group_' + (preferred + 1) + '_count'];
-            const shortCount = row['group_' + (short + 1) + '_count'];
-            return longCount === null || shortCount === null ? null : longCount + shortCount;
+            : `当前方向：${this.names[preferred]} − ${this.names[short]}，由所选区间 IC 均值确定。` + (result.spread.some(value => value !== null && value < -1) ? '该区间多空单日亏损超过 100%，不计算多空复利指标和曲线。' : '');
+        const records = result.groups.map((returns, index) => this.metricRow(this.names[index] + (index === preferred ? ' · 多头' : ''), returns, result.counts[index], result.turnovers[index]));
+        records.push(this.metricRow('Long-short', result.spread, result.counts[0].map((_, day) => {
+            if (preferred === null || result.counts[preferred][day] === null || result.counts[short][day] === null) return null;
+            return result.counts[preferred][day] + result.counts[short][day];
         }), []));
         document.getElementById('group-table').innerHTML = this.table(
             ['组合', '有效交易日', '日均股票数量', '平均换手率', '区间收益', '年化收益', '年化波动率', '最大回撤', 'Sharpe'], records);
-        const labels = ['起点', ...rows.map(row => row.date)];
-        for (const [target, key] of [['group-cumulative', 'cumulative'], ['group-drawdown', 'drawdown']]) {
-            this.chart(target, labels, performances.map((result, index) => ({name: this.names[index], values: result[key]})));
-        }
-        this.chart('annual-returns', this.names, [{name: '年化收益', values: performances.map(result => result.metrics[2])}], true, true);
-        this.chart('ls-cumulative', labels, [{name: 'Long-short', values: longShort.cumulative}]);
-        this.chart('ls-drawdown', labels, [{name: 'Long-short', values: longShort.drawdown}]);
-        this.updateCards(this.selected);
+        document.getElementById('ic-table').innerHTML = this.table(['指标', '有效观测数', '均值', '标准差', 'IR（均值 / 标准差）', '年化 IR', '大于零占比'],
+            [['IC', ic], ['RankIC', rankIC]].map(([label, stats]) => [label, stats[0]].concat(stats.slice(1).map((value, index) => this.format(value, index === 4)))));
+        const labels = ['起点', ...result.dates];
+        const groupSeries = key => result.performances.map((performance, index) => ({name: this.names[index], color: this.data.colors[index], values: performance[key]}));
+        this.chart('group-cumulative', labels, groupSeries('cumulative'));
+        this.chart('group-drawdown', labels, groupSeries('drawdown'));
+        this.chart('annual-returns', this.names, [{name: '年化收益', values: result.performances.map(performance => performance.metrics[2])}], {bars: true});
+        this.chart('ls-cumulative', labels, [{name: 'Long-short', color: item.color, values: result.longShort.cumulative}]);
+        this.chart('ls-drawdown', labels, [{name: 'Long-short', color: item.color, values: result.longShort.drawdown}]);
+        this.chart('window-ic', labels, [{name: '累积 IC', color: '#2a78d6', values: this.cumulativeSum(result.ic)},
+            {name: '累积 RankIC', color: '#eb6834', values: this.cumulativeSum(result.rankIC)}], {percent: false});
     }
 
+    // 分年页始终使用完整区间，各窗口方向由完整区间 IC 均值确定，与持仓清单一致。
     renderYears() {
-        const byYear = new Map();
-        for (const row of this.complete(this.data.rows)) {
-            const year = row.date.slice(0, 4);
-            if (!byYear.has(year)) byYear.set(year, []);
-            byYear.get(year).push(row);
-        }
+        const results = this.windows.map(item => this.analyze(item, 0, this.dates.length - 1));
+        const years = [];
+        this.dates.forEach((date, index) => {
+            if (!years.length || years[years.length - 1].year !== date.slice(0, 4)) years.push({year: date.slice(0, 4), start: index});
+            years[years.length - 1].end = index;
+        });
+        const slice = (values, year) => values.slice(year.start, year.end + 1);
+        const headers = this.windows.map(item => item.label);
+        document.getElementById('yearly-ls').innerHTML = this.heatTable('年份', headers, years.map(year => ({
+            label: year.year, values: results.map(result => this.performance(slice(result.spread, year)).metrics[1])
+        })), true);
+        document.getElementById('yearly-ic').innerHTML = this.heatTable('年份', headers, years.map(year => ({
+            label: year.year, values: results.map(result => this.mean(slice(result.ic, year)))
+        })), false);
+
+        const result = results[this.current];
+        const preferred = result.preferred;
+        document.getElementById('yearly-long').textContent = preferred === null ? '无有效 IC' : `多头组 ${this.names[preferred]}`;
+        document.getElementById('yearly-table').innerHTML = preferred === null ? '<p class="empty">没有有效 IC，无法确定多头组。</p>' : this.table(
+            ['年份', '有效交易日', '日均股票数量', '平均换手率', '区间收益', '年化收益', '年化波动率', '最大回撤', 'Sharpe'],
+            years.map(year => this.metricRow(year.year, slice(result.groups[preferred], year), slice(result.counts[preferred], year), slice(result.turnovers[preferred], year))));
         const container = document.getElementById('yearly-curves');
-        for (const [year, rows] of byYear) {
+        container.replaceChildren();
+        for (const year of years) {
             const heading = document.createElement('h3');
-            heading.textContent = year + ' · 各组累计收益';
+            heading.textContent = year.year + ' · 各组累计收益';
             const chart = document.createElement('div');
-            chart.id = 'year-' + year;
+            chart.id = 'year-' + year.year;
+            chart.className = 'chart';
             chart.dataset.label = heading.textContent;
             container.append(heading, chart);
-            this.chart(chart.id, ['起点', ...rows.map(row => row.date)], this.names.map((name, index) => ({
-                name, values: this.performance(rows.map(row => row['group_' + (index + 1)])).cumulative
+            this.chart(chart.id, ['起点', ...this.dates.slice(year.start, year.end + 1)], result.groups.map((returns, index) => ({
+                name: this.names[index], color: this.data.colors[index], values: this.performance(slice(returns, year)).cumulative
             })));
         }
     }
@@ -430,120 +580,175 @@ class FactorReport {
 new FactorReport(JSON.parse(document.getElementById('report-data').textContent));
 """
 
-    def plot_results_html(self):
-        """Write an offline HTML report with tabs and an interactive date range."""
-        data = self.factor_results
-        yearly_rows = [(str(year), returns, self.group_counts[f"{self.preferred_group}_count"]) for year, returns in self.group_returns[self.preferred_group].groupby(self.group_returns.index.year)]
-        yearly_table = self._performance_table(yearly_rows, "年份")
-        ic_chart = self._chart({"Cumulative IC": data["IC"].cumsum()}, "Cumulative IC", zero=True)
-        rank_ic_chart = self._chart({"Cumulative RankIC": data["rankIC"].cumsum()}, "Cumulative RankIC", zero=True)
-        columns = self.GROUPS + ["IC", "rankIC"] + [f"{group}_{suffix}" for suffix in ("count", "turnover") for group in self.GROUPS]
-        payload = data.reindex(columns=columns).copy()
-        payload.insert(0, "date", data.index.strftime("%Y-%m-%d"))
-        report_data = json.dumps({"rows": json.loads(payload.to_json(orient="records", double_precision=15)),
-                                  "periods": self.periods_per_year, "riskFree": self.risk_free_rate,
-                                  "colors": self.group_colors, "names": [f"G{group}" for group in range(1, len(self.GROUPS) + 1)]}, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c")
+    @staticmethod
+    def plot_results_html(factor_path, results_dir, start_date=None, output_dir=None):
+        """将一个因子文件中原始值和各滚动均值列的评估结果合并为一份离线 HTML 报告，每个因子只输出一份。"""
+        factor_path = Path(factor_path)
+        factor_name = factor_path.stem
+        # 窗口顺序沿用因子文件中的列顺序（原始值在前，滚动窗口由短到长），只合并已有评估结果的列。
+        visualizers = []
+        for column in pq.read_schema(factor_path).names:
+            if column not in ("code", "date") and (Path(results_dir) / f"{column}.csv").is_file():
+                visualizers.append(ResultsVisualizer(Path(results_dir) / f"{column}.csv", column, start_date, output_dir))
+        if not visualizers:
+            raise ValueError(f"No evaluation results for factor {factor_name} in {results_dir}.")
+        output_dir = visualizers[0].output_dir
+        groups = visualizers[0].GROUPS
+        columns = groups + ["IC", "rankIC"] + [f"{group}_{suffix}" for suffix in ("count", "turnover") for group in groups]
+
+        # 各窗口按评估日期的并集对齐，某个窗口缺失的日期留空。
+        dates = visualizers[0].factor_results.index
+        for visualizer in visualizers[1:]:
+            dates = dates.union(visualizer.factor_results.index)
+        windows = []
+        picker = ""
+        for index, visualizer in enumerate(visualizers):
+            suffix = visualizer.factor_name.removeprefix(f"{factor_name}_")
+            if visualizer.factor_name == factor_name:
+                label = "原始值"
+            elif suffix.endswith("_m"):
+                label = f"{suffix[:-2]} 日均值"
+            else:
+                label = suffix
+            color = ResultsVisualizer.WINDOW_COLORS[index % len(ResultsVisualizer.WINDOW_COLORS)]
+            payload = visualizer.factor_results.reindex(index=dates, columns=columns)
+            windows.append({"label": label, "column": visualizer.factor_name, "color": color, "data": json.loads(payload.to_json(orient="values", double_precision=8))})
+            picker += f'<button type="button" data-window="{index}" aria-pressed="{str(index == 0).lower()}" title="{escape(visualizer.factor_name)}"><i class="key" style="background: {color}"></i>{escape(label)}</button>'
+
+        report_data = json.dumps({"dates": list(dates.strftime("%Y-%m-%d")), "columns": columns, "windows": windows,
+                                  "periods": visualizers[0].periods_per_year, "riskFree": visualizers[0].risk_free_rate,
+                                  "colors": visualizers[0].group_colors, "names": [f"G{group}" for group in range(1, len(groups) + 1)]}, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c")
         cards = "".join(f'<div class="stat"><span>{label}</span><strong id="card-{index}">—</strong></div>'
-                        for index, label in enumerate(["IC 均值", "RankIC 均值", "ICIR", "多头 Sharpe"]))
-        title = escape(self.factor_name)
+                        for index, label in enumerate(["IC 均值", "RankIC 均值", "ICIR", "多空年化收益", "多头年化收益", "多头 Sharpe"]))
+        title = escape(factor_name)
+        window_labels = escape("、".join(window["label"] for window in windows))
+        last_group = f"G{len(groups)}"
         html = f'''<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} · 因子评估报告</title>
 <style>
 :root {{ color-scheme: light; font-family: Inter, "Microsoft YaHei", "PingFang SC", sans-serif; color: #172b4d; background: #f2f5fa; }}
-* {{ box-sizing: border-box; }} body {{ margin: 0; }} main {{ max-width: 1280px; margin: auto; padding: 24px 28px; }}
-.tabs {{ position: sticky; top: 0; z-index: 10; display: flex; gap: 10px; padding: 14px 0; background: #f2f5fa; }}
-button {{ border: 1px solid #dce3ed; border-radius: 10px; padding: 12px 20px; background: white; color: #28578c; cursor: pointer; font: inherit; }}
-button[aria-selected="true"] {{ color: white; background: #28578c; border-color: #28578c; }}
-button:focus-visible, input:focus-visible {{ outline: 3px solid #06a6a0; outline-offset: 3px; }}
-[hidden] {{ display: none !important; }} header {{ padding: 32px; background: linear-gradient(120deg, #172c52, #28578c); color: white; border-radius: 20px; }}
-.eyebrow {{ color: #9edcfa; font-size: 12px; letter-spacing: 3px; }} h1 {{ font-size: 30px; margin: 16px 0; overflow-wrap: anywhere; }}
-header p {{ color: #d2dfef; line-height: 1.8; }} .stats {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; margin: 14px 0 24px; }}
-.stat, section {{ background: white; border: 1px solid #e3e9f2; border-radius: 16px; box-shadow: 0 5px 20px #23395605; }}
-.stat {{ padding: 24px; }} .stat span {{ display: block; color: #718096; font-size: 13px; }} .stat strong {{ display: block; margin-top: 12px; font-size: 28px; color: #2563a4; }}
-section {{ padding: 26px; margin-bottom: 22px; }} h2 {{ margin: 0; font-size: 20px; }} h3 {{ margin: 24px 0 6px; font-size: 16px; }}
-section p, footer, #card-scope {{ font-size: 13px; color: #6b7c94; line-height: 1.9; }} .content {{ overflow-x: auto; }}
-svg {{ display: block; width: 100%; height: auto; min-width: 560px; }} svg text {{ font-family: inherit; font-size: 12px; fill: #64748b; }}
+* {{ box-sizing: border-box; }} body {{ margin: 0; background: #f2f5fa; }} main {{ max-width: 1280px; margin: auto; padding: 24px 28px; }} [hidden] {{ display: none !important; }}
+header {{ padding: 30px 32px; background: linear-gradient(120deg, #172c52, #28578c); color: white; border-radius: 20px; }}
+.eyebrow {{ color: #9edcfa; font-size: 12px; letter-spacing: 3px; }} h1 {{ font-size: 30px; margin: 14px 0 10px; overflow-wrap: anywhere; }} header p {{ margin: 0; color: #d2dfef; line-height: 1.8; }}
+.toolbar {{ position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 18px; padding: 14px 0; background: #f2f5fa; }}
+.tabs, .picker {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }} .picker > span {{ font-size: 13px; color: #6b7c94; margin-right: 2px; }}
+button {{ font: inherit; cursor: pointer; }} button:focus-visible, input:focus-visible {{ outline: 3px solid #06a6a0; outline-offset: 3px; }}
+.tabs button {{ border: 1px solid #dce3ed; border-radius: 10px; padding: 11px 20px; background: white; color: #28578c; }}
+.tabs button[aria-selected="true"] {{ color: white; background: #28578c; border-color: #28578c; }}
+.picker button {{ border: 1px solid #dce3ed; border-radius: 999px; padding: 6px 13px; background: white; color: #28578c; font-size: 13px; }}
+.picker button[aria-pressed="true"] {{ color: white; background: #172c52; border-color: #172c52; }}
+i.key {{ display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 7px; vertical-align: middle; }}
+section, .stat {{ background: white; border: 1px solid #e3e9f2; border-radius: 16px; box-shadow: 0 5px 20px #23395605; }}
+section {{ padding: 24px 26px; margin-bottom: 20px; }} h2 {{ margin: 0; font-size: 20px; }} h3 {{ margin: 24px 0 4px; font-size: 15px; }}
+section p, footer {{ font-size: 13px; color: #6b7c94; line-height: 1.9; }} .content, .chart {{ overflow-x: auto; }} .empty {{ text-align: center; padding: 40px; }}
+.section-head {{ display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }}
+.ghost {{ border: 1px solid #dce3ed; border-radius: 8px; padding: 7px 14px; background: #f4f7fb; color: #28578c; font-size: 13px; }}
+.range-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px 28px; margin: 6px 0 4px; }}
+.range-grid label {{ display: flex; justify-content: space-between; gap: 8px; font-size: 13px; color: #6b7c94; margin-bottom: 4px; }} output {{ color: #2563a4; font-weight: 600; }}
+input[type="range"] {{ width: 100%; accent-color: #2563eb; cursor: ew-resize; }}
+.window-head {{ display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; margin: 4px 0 14px; }} .window-head h2 {{ font-size: 24px; }} .window-head p {{ margin: 0; font-size: 13px; color: #6b7c94; }}
+.stats {{ display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin-bottom: 20px; }}
+.stat {{ padding: 18px 20px; }} .stat span {{ display: block; color: #718096; font-size: 13px; }} .stat strong {{ display: block; margin-top: 10px; font-size: 24px; color: #2563a4; }}
+.grid-2 {{ display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px; }}
+svg {{ display: block; width: 100%; height: auto; min-width: 560px; }} svg text {{ font-family: inherit; font-size: 12px; fill: #64748b; }} svg text.value {{ fill: #172b4d; }}
+svg .grid {{ stroke: #e8edf5; }} svg .zero {{ stroke: #94a3b8; stroke-dasharray: 4 4; }} svg .crosshair {{ stroke: #475569; stroke-width: 1; }}
+.legend {{ display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 8px 0 2px; font-size: 12px; color: #52607a; }}
 table {{ width: 100%; border-collapse: collapse; font-size: 13px; white-space: nowrap; }} th {{ background: #f4f7fb; color: #61718b; font-weight: 500; }}
-th, td {{ padding: 15px 13px; text-align: right; border-bottom: 1px solid #edf1f6; }} th:first-child, td:first-child {{ text-align: left; }} tbody tr:hover {{ background: #f4f8ff; }}
-.range-control {{ display: grid; grid-template-columns: 210px 1fr; align-items: center; gap: 18px; margin: 18px 0; font-size: 14px; }}
-input[type="range"] {{ width: 100%; accent-color: #2563eb; cursor: ew-resize; }} output {{ color: #2563a4; }} .empty {{ text-align: center; padding: 40px; }}
-footer {{ padding: 4px 12px 20px; }} @media(max-width: 700px) {{ main {{ padding: 12px; }} header, section {{ padding: 18px; }} .stats {{ grid-template-columns: repeat(2, 1fr); gap: 10px; }} .stat {{ padding: 18px; }} h1 {{ font-size: 24px; }} .stat strong {{ font-size: 23px; }} .range-control {{ grid-template-columns: 1fr; gap: 8px; }} .tabs button {{ flex: 1; padding: 12px 6px; }} }}
-@media print {{ main {{ padding: 0; }} .tabs, #range-controls {{ display: none; }} [role="tabpanel"][hidden] {{ display: block !important; }} section {{ break-inside: avoid; }} .content {{ overflow: visible; }} svg {{ min-width: 0; }} }}
+th, td {{ padding: 12px 13px; text-align: right; border-bottom: 1px solid #edf1f6; }} th:first-child, td:first-child {{ text-align: left; }} tbody tr:hover {{ background: #f4f8ff; }}
+table.compare td.best {{ font-weight: 700; color: #1c5cab; background: #eef4fd; }}
+.window-link {{ border: 0; padding: 0; background: none; color: #28578c; font-weight: 600; text-decoration: underline dotted #94a3b8; text-underline-offset: 4px; }}
+table.heatmap td.heat {{ text-align: center; border: 1px solid white; min-width: 72px; }} table.heatmap td.long {{ box-shadow: inset 0 0 0 2px #172b4d; font-weight: 700; }}
+#tooltip {{ position: fixed; z-index: 20; pointer-events: none; min-width: 150px; padding: 10px 12px; background: white; border: 1px solid #dce3ed; border-radius: 10px; box-shadow: 0 8px 24px #1729521f; font-size: 12px; color: #52607a; }}
+#tooltip div {{ display: flex; align-items: center; gap: 6px; line-height: 1.7; }} #tooltip strong {{ min-width: 64px; color: #172b4d; font-variant-numeric: tabular-nums; }} #tooltip i.key {{ margin-right: 0; }}
+#tooltip .tooltip-title {{ margin-bottom: 4px; color: #172b4d; font-weight: 600; }}
+footer {{ padding: 4px 12px 20px; }}
+@media(max-width: 1000px) {{ .stats {{ grid-template-columns: repeat(3, 1fr); }} .range-grid, .grid-2 {{ grid-template-columns: 1fr; }} }}
+@media(max-width: 700px) {{ main {{ padding: 12px 16px; }} header, section {{ padding: 18px; }} h1 {{ font-size: 24px; }} .stats {{ grid-template-columns: repeat(2, 1fr); gap: 10px; }} .stat strong {{ font-size: 21px; }} .tabs {{ width: 100%; }} .tabs button {{ flex: 1; padding: 11px 6px; }} .toolbar {{ position: static; }} }}
+@media print {{ main {{ padding: 0; }} .toolbar, #range-controls, #tooltip {{ display: none !important; }} [role="tabpanel"][hidden] {{ display: block !important; }} section {{ break-inside: avoid; }} .content, .chart {{ overflow: visible; }} svg {{ min-width: 0; }} }}
 </style></head><body><main>
-<nav class="tabs" role="tablist" aria-label="报告页面">
-<button id="tab-groups" role="tab" aria-controls="page-groups" aria-selected="true">分组结果</button>
-<button id="tab-ic" role="tab" aria-controls="page-ic" aria-selected="false">IC 分析</button>
-<button id="tab-years" role="tab" aria-controls="page-years" aria-selected="false">分年收益</button>
-</nav>
 <header><div class="eyebrow">FACTOR RESEARCH / PERFORMANCE REPORT</div><h1>{title} · 因子评估报告</h1>
-<p>{data.index.min():%Y-%m-%d} — {data.index.max():%Y-%m-%d} · {len(data):,} 个评估日 · {len(self.group_returns):,} 个完整收益日</p></header>
-<p id="card-scope">指标范围：分组结果所选区间</p><div class="stats">{cards}</div>
+<p>{dates.min():%Y-%m-%d} — {dates.max():%Y-%m-%d} · {len(dates):,} 个评估日 · 每日分 {len(groups)} 组 · {len(windows)} 个窗口：{window_labels}</p></header>
+<nav class="toolbar" aria-label="报告导航">
+<div class="tabs" role="tablist"><button type="button" role="tab" data-page="overview" aria-controls="page-overview" aria-selected="true">窗口对比</button><button type="button" role="tab" data-page="window" aria-controls="page-window" aria-selected="false">窗口详情</button><button type="button" role="tab" data-page="years" aria-controls="page-years" aria-selected="false">分年表现</button></div>
+<div class="picker" id="window-picker" hidden><span>窗口</span>{picker}</div>
+</nav>
 <noscript><p>请启用 JavaScript，以使用页面切换、时间滑块和交互收益图表。</p></noscript>
-<div id="page-groups" role="tabpanel" aria-labelledby="tab-groups">
-<section id="range-controls"><h2>分析时间区间</h2><p id="range-summary" aria-live="polite"></p>
-<div class="range-control"><label for="range-start">开始日期 <output id="start-date" for="range-start"></output></label><input id="range-start" type="range" min="0" value="0" step="1"></div>
-<div class="range-control"><label for="range-end">结束日期 <output id="end-date" for="range-end"></output></label><input id="range-end" type="range" min="0" value="0" step="1"></div>
-<div class="range-control"><label for="range-pan">平移整个时间窗口</label><input id="range-pan" type="range" min="0" value="0" step="1"></div>
-<button id="range-reset">恢复完整区间</button><p>拖动滑块立即重算本页指标与曲线；平移窗口保持评估日数不变。IC 分析与分年收益页始终使用完整展示区间。</p></section>
-<section><h2>分组绩效</h2><p id="direction-note"></p><p>G1 为因子值最低组，G{len(self.GROUPS)} 为最高组。各组与多空组合使用相同的完整收益日；股票数量与换手率按这些日期取均值，缺失值不参与均值。多空股票数量为两端之和，不展示多空换手率。</p><div id="group-table" class="content"></div></section>
+<section id="range-controls"><div class="section-head"><h2>分析时间区间</h2><button type="button" id="range-reset" class="ghost">恢复完整区间</button></div>
+<p id="range-summary" aria-live="polite"></p>
+<div class="range-grid">
+<div><label for="range-start"><span>开始日期</span><output id="start-date" for="range-start"></output></label><input id="range-start" type="range" min="0" value="0" step="1"></div>
+<div><label for="range-end"><span>结束日期</span><output id="end-date" for="range-end"></output></label><input id="range-end" type="range" min="0" value="0" step="1"></div>
+<div><label for="range-pan"><span>平移整个区间</span><span>评估日数不变</span></label><input id="range-pan" type="range" min="0" value="0" step="1"></div>
+</div><p>拖动滑块后，窗口对比和窗口详情两页的指标与曲线立即重算；分年表现页始终使用完整区间。</p></section>
+
+<div id="page-overview" role="tabpanel" aria-label="窗口对比">
+<section><h2>窗口指标对比</h2><p>每行一个窗口（原始值或滚动均值列），全部指标按所选区间计算，各窗口分别由区间 IC 均值确定多头组。蓝底加粗为该列最优：IC 类取绝对值最大，换手率取最小，其余取最大。点击窗口名查看该窗口详情。</p><div id="compare-table" class="content"></div></section>
+<section><h2>各窗口分组年化收益</h2><p>每行一个窗口，从左到右为 G1（因子值最低）到 {last_group}（因子值最高）。红色为正、蓝色为负，颜色越深绝对值越大；加框为该窗口的多头组。用于比较不同窗口的分组单调性。</p><div id="group-heatmap" class="content"></div></section>
+<section><h2>各窗口累计收益</h2><p>按日复利累计，所选区间起点收益为 0；各窗口使用各自的多空方向。横轴为评估日，某窗口收益缺失的日期净值持平。</p>
+<h3>多空组合</h3><div id="compare-ls" class="chart" data-label="各窗口多空累计收益"></div><h3>多头组合</h3><div id="compare-long" class="chart" data-label="各窗口多头累计收益"></div></section>
+<section><h2>各窗口累积 IC</h2><p>每日 IC / RankIC 的算术累加，所选区间起点为 0；缺失日期不累加。负向因子的曲线向下，斜率越陡越有效。</p>
+<h3>累积 IC</h3><div id="compare-ic" class="chart" data-label="各窗口累积 IC"></div><h3>累积 RankIC</h3><div id="compare-rankic" class="chart" data-label="各窗口累积 RankIC"></div></section>
+</div>
+
+<div id="page-window" role="tabpanel" aria-label="窗口详情" hidden>
+<div class="window-head"><h2><span class="window-name"></span> · 窗口详情</h2><p id="window-summary"></p></div>
+<div class="stats">{cards}</div>
+<section><h2>分组绩效</h2><p id="direction-note"></p><p>G1 为因子值最低组，{last_group} 为最高组。各组与多空组合使用相同的完整收益日；股票数量与换手率按这些日期取均值，缺失值不参与均值。多空股票数量为两端之和，不展示多空换手率。</p><div id="group-table" class="content"></div></section>
 <section><h2>各组累计收益和动态回撤</h2><p>按日复利累计；所选区间起点收益为 0、净值为 1。动态回撤 = 当前净值 / 区间内历史最高净值 − 1，包含初始净值。</p>
-<h3>各组累计收益</h3><div id="group-cumulative" class="content" data-label="各组累计收益"></div><h3>各组动态回撤</h3><div id="group-drawdown" class="content" data-label="各组动态回撤"></div></section>
-<section><h2>各组年化收益 · 单调性</h2><p>按因子值从低到高排列 G1 → G{len(self.GROUPS)}。年化收益按所选区间的有效收益日数折算；正向因子观察是否递增，负向因子观察是否递减。</p><div id="annual-returns" class="content" data-label="各组年化收益"></div></section>
-<section><h2>Long-short 累计收益和动态回撤</h2><p>每日多头收益减空头收益，再复利累计；累计收益与回撤均在所选区间起点重置。</p><h3>Long-short 累计收益</h3><div id="ls-cumulative" class="content" data-label="Long-short 累计收益"></div><h3>Long-short 动态回撤</h3><div id="ls-drawdown" class="content" data-label="Long-short 动态回撤"></div></section>
+<h3>各组累计收益</h3><div id="group-cumulative" class="chart" data-label="各组累计收益"></div><h3>各组动态回撤</h3><div id="group-drawdown" class="chart" data-label="各组动态回撤"></div></section>
+<section><h2>各组年化收益 · 单调性</h2><p>按因子值从低到高排列 G1 → {last_group}。年化收益按所选区间的有效收益日数折算；正向因子观察是否递增，负向因子观察是否递减。</p><div id="annual-returns" class="chart" data-label="各组年化收益"></div></section>
+<section><h2>Long-short 累计收益和动态回撤</h2><p>每日多头收益减空头收益，再复利累计；累计收益与回撤均在所选区间起点重置。</p>
+<h3>Long-short 累计收益</h3><div id="ls-cumulative" class="chart" data-label="Long-short 累计收益"></div><h3>Long-short 动态回撤</h3><div id="ls-drawdown" class="chart" data-label="Long-short 动态回撤"></div></section>
+<section><h2>IC / RankIC</h2><p>所选区间的截面相关性统计，IR 保留方向符号；累积曲线为每日值的算术累加，缺失日期不累加。</p><div id="ic-table" class="content"></div>
+<h3>累积 IC 与 RankIC</h3><div id="window-ic" class="chart" data-label="累积 IC 与 RankIC"></div></section>
 </div>
-<div id="page-ic" role="tabpanel" aria-labelledby="tab-ic" hidden>
-<section><h2>IC / RankIC 统计</h2><p>完整展示区间的截面相关性统计，IR 保留方向符号。</p><div class="content">{self._ic_table()}</div></section>
-<section><h2>累积 IC</h2><p>每日 Pearson IC 的算术累加；缺失日期留空，不参与累加。</p><div class="content">{ic_chart}</div></section>
-<section><h2>累积 RankIC</h2><p>每日秩相关系数 RankIC 的算术累加；缺失日期留空，不参与累加。</p><div class="content">{rank_ic_chart}</div></section>
-</div>
-<div id="page-years" role="tabpanel" aria-labelledby="tab-years" hidden>
-<section><h2>IC方向优选组 G{self.preferred_group.split("_")[1]} · 分年绩效</h2><p>多头组由完整展示区间的 IC 均值确定。区间收益为该年实际覆盖日期的复利收益，首尾年份可能不完整；回撤每年重置。</p><div class="content">{yearly_table}</div></section>
-<section><h2>分年各组累计收益</h2><p>按年份分面展示各组收益。各年从 0 重新开始，净值从 1 按该年有效日收益复利累计，不继承上一年净值；横轴按有效交易日排列。</p><div id="yearly-curves" class="content"></div></section>
+
+<div id="page-years" role="tabpanel" aria-label="分年表现" hidden>
+<section><h2>各窗口分年对比</h2><p>使用完整区间，各窗口的多空方向由完整区间 IC 均值确定。多空收益为该年实际覆盖日期的复利收益，首尾年份可能不完整；红色为正、蓝色为负，颜色深浅在每张表内单独标定。</p>
+<div class="grid-2"><div><h3>分年多空收益</h3><div id="yearly-ls" class="content"></div></div><div><h3>分年 IC 均值</h3><div id="yearly-ic" class="content"></div></div></div></section>
+<section><h2><span class="window-name"></span> · 分年绩效（<span id="yearly-long"></span>）</h2><p>多头组由完整区间 IC 均值确定。区间收益为该年实际覆盖日期的复利收益；回撤每年重置。</p><div id="yearly-table" class="content"></div></section>
+<section><h2><span class="window-name"></span> · 分年各组累计收益</h2><p>各年从 0 重新开始，净值从 1 按该年有效日收益复利累计，不继承上一年净值。</p><div id="yearly-curves"></div></section>
 </div>
 <footer><b>计算口径</b><br>
-日收益使用小数；年化交易日数 {self.periods_per_year:g}，年化无风险利率 {self.risk_free_rate:.2%}。
+窗口为因子文件中的各列：原始值和按交易日滚动的均值列（如 5 日均值对应 {title}_5_m），每个窗口单独分组回测，互不影响。<br>
+日收益使用小数；年化交易日数 {visualizers[0].periods_per_year:g}，年化无风险利率 {visualizers[0].risk_free_rate:.2%}。
 年化收益 = ∏(1 + 日收益)^(年化交易日数 / 有效交易日数) − 1；年化波动率 = 日收益样本标准差 × √年化交易日数。
 Sharpe = (平均日收益 − 等效日无风险利率) / 日收益样本标准差 × √年化交易日数。
 ICIR / RankICIR = 均值 / 样本标准差；年化 IR 再乘 √年化交易日数。标准差为零或样本不足时显示「—」。<br>
-IC 均值 &gt; 0 时做多 G{len(self.GROUPS)}、做空 G1，否则做多 G1、做空 G{len(self.GROUPS)}。第一页按所选区间确定方向，其他页按完整展示区间确定，属于事后分析。
-多空按多头 100%、空头 100% 的收益差计算，未除以 2；不计手续费、滑点和融券成本。
-缺失 IC / RankIC 各自剔除；任一组缺失收益的日期从全部收益统计中共同剔除，不填充为零。
-平均换手率沿用原始日换手率，在有效收益日内求均值；拖动区间不重建持仓，首日沿用已有值。收益图横轴按有效交易日等距排列。<br>
-日期沿用评估结果的收益起始日标签，跨年收益按该标签归属年份。分年收益以实际样本区间为准，年化指标按有效日数折算。
-所有数据与图表已嵌入，可离线查看。生成时间：{pd.Timestamp.now():%Y-%m-%d %H:%M:%S}。
-</footer></main><script id="report-data" type="application/json">{report_data}</script><script>{self._report_script()}</script></body></html>'''
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = "".join(character if character.isalnum() or character in "-_." else "_" for character in self.factor_name).strip(".") or "factor"
-        output_path = self.output_dir / f"{safe_name}_report.html"
+IC 均值 &gt; 0 时做多 {last_group}、做空 G1，否则做多 G1、做空 {last_group}。窗口对比与窗口详情按所选区间确定方向，分年表现按完整区间确定，属于事后分析。
+多空按多头 100%、空头 100% 的收益差计算，未除以 2；不计手续费、滑点和融券成本。<br>
+缺失 IC / RankIC 各自剔除；任一组缺失收益的日期从该窗口的全部收益统计中共同剔除，不填充为零。收益图横轴为评估日，收益缺失日净值持平。
+平均换手率沿用原始日换手率，在有效收益日内求均值；拖动区间不重建持仓，首日沿用已有值。<br>
+日期沿用评估结果的收益起始日标签，跨年收益按该标签归属年份。所有数据与图表已嵌入，可离线查看。生成时间：{pd.Timestamp.now():%Y-%m-%d %H:%M:%S}。
+</footer></main>
+<div id="tooltip" role="tooltip" hidden></div>
+<script id="report-data" type="application/json">{report_data}</script><script>{ResultsVisualizer._report_script()}</script></body></html>'''
+        output_dir.mkdir(parents=True, exist_ok=True)
+        # 删除旧版按列输出的滚动均值列报告，每个因子只保留一份。
+        for visualizer in visualizers:
+            if visualizer.factor_name != factor_name:
+                (output_dir / f"{visualizer.factor_name}_report.html").unlink(missing_ok=True)
+        safe_name = "".join(character if character.isalnum() or character in "-_." else "_" for character in factor_name).strip(".") or "factor"
+        output_path = output_dir / f"{safe_name}_report.html"
         output_path.write_text(html, encoding="utf-8")
         return output_path.resolve()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--results", type=Path, help="Evaluation CSV; defaults to the configured factor results.")
-    parser.add_argument("--factor-name")
+    parser.add_argument("--factor-name", help="因子文件名（不含滚动窗口后缀）；默认取 specified_column 所属的因子。")
     parser.add_argument("--start-date")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[3] / "config/config_factor_evaluation.json")
     args = parser.parse_args()
-    output_dir = args.output_dir
-    if args.results is None:
-        sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-        from main import load_config
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from main import load_config
 
-        config = load_config(args.config)
-        factor_name = args.factor_name or config["specified_column"] or pd.read_parquet(config["factor_data_dir"]).columns[2]
-        results = Path(config["output_dir"]) / f"{factor_name}.csv"
-        start_date = args.start_date or config["start_date"]
-        if output_dir is None:
-            output_dir = config.get("visualization_output_dir")
-    else:
-        results = args.results
-        factor_name = args.factor_name or results.stem
-        start_date = args.start_date
-    print(ResultsVisualizer(results, factor_name, start_date, output_dir).plot_results_html())
+    config = load_config(args.config)
+    factor_name = (args.factor_name or config["specified_column"]).split("_")[0]
+    output_dir = args.output_dir or config.get("visualization_output_dir")
+    print(ResultsVisualizer.plot_results_html(Path(config["factor_data_dir"]) / f"{factor_name}.parquet", config["output_dir"], args.start_date or config["start_date"], output_dir))
 
 
 if __name__ == "__main__":

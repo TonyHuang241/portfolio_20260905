@@ -7,6 +7,7 @@ from tqdm import tqdm
 
 from factors.evaluation.single_factor_evaluation_v1 import SingleFactorEvaluation, _clear_existing_results
 from factors.evaluation.factor_correlation_analysis.factor_correlation_analyzer import FactorCorrelationAnalyzer
+from factors.evaluation.results_visualization.results_visualizer import ResultsVisualizer
 
 
 class MultiFactorEvaluation:
@@ -22,7 +23,7 @@ class MultiFactorEvaluation:
         config, factor_path, factor_name, prices_by_date = task
         factor_data = pd.read_parquet(factor_path, columns=["code", "date", factor_name])
         evaluator = SingleFactorEvaluation({**config, "specified_column": factor_name}, factor_data)
-        return {"因子文件": factor_path.name, **evaluator.evaluate(prices_by_date=prices_by_date)}
+        return {"因子文件": factor_path.name, **evaluator.evaluate(prices_by_date=prices_by_date, plot_report=False)}
 
     def evaluate(self):
         factor_files = sorted(self.factor_dir.glob("*.parquet"))
@@ -39,6 +40,10 @@ class MultiFactorEvaluation:
                     tasks.append((self.config, factor_path, factor_name, prices_by_date))
         with Pool(processes=self.processes) as pool:
             records = list(tqdm(pool.imap(MultiFactorEvaluation._evaluate_column, tasks), total=len(tasks), desc="Evaluating factors", unit="factor"))
+
+        # 每个因子文件生成一份报告，合并原始值和各滚动均值列的评估结果。
+        for factor_path in tqdm(factor_files, desc="Plotting reports", unit="factor"):
+            ResultsVisualizer.plot_results_html(factor_path, self.config["output_dir"], self.config["start_date"], self.config.get("visualization_output_dir"))
 
         summary = pd.DataFrame(records)
         summary.to_csv(Path(self.config["output_dir"]) / "factor_comparison.csv", index=False, encoding="utf-8-sig")

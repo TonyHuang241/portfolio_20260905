@@ -73,7 +73,7 @@ factor_list.csv          # 高频因子清单及算子公式
 | --- | --- |
 | `numerical_output/<因子列>.csv` | 每日分组收益、IC、RankIC、股票数、换手率 |
 | `numerical_output/factor_comparison.csv` | 批量模式的指标汇总 |
-| `visualization_output/<因子列>_report.html` | 单因子交互式报告 |
+| `visualization_output/<因子>_report.html` | 单因子交互式报告，每个因子一份，合并原始值和各滚动均值列：窗口对比、窗口详情、分年表现 |
 | `visualization_output/multi_factor_evaluation/multi_factor_evaluation_report.html` | 批量模式报告：指标对比、相关性矩阵、R² 曲线 |
 | `stock_list/<因子列>.csv` | 历史每日多头持仓 |
 | `stock_list/next_day/<因子列>.csv` | 由最新收盘信号得到的下一交易日目标持仓 |

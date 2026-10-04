@@ -27,9 +27,9 @@ class SingleFactorEvaluation:
         self._clear_outputs = factor_data is None
 
         specified_column = config["specified_column"]
+        self.factor_path = Path(config["factor_data_dir"]) / f"{specified_column.split('_')[0]}.parquet"
         if factor_data is None:
-            factor_path = Path(config["factor_data_dir"]) / f"{specified_column.split('_')[0]}.parquet"
-            factor = pd.read_parquet(factor_path)
+            factor = pd.read_parquet(self.factor_path)
         else:
             factor = factor_data
 
@@ -105,8 +105,8 @@ class SingleFactorEvaluation:
         data["date"] = data["trade_time"].map(dict(zip(trade_times, pd.to_datetime(trade_times).dt.strftime("%Y%m%d"))))
         return data.pivot(index="date", columns="code", values="close")
 
-    def evaluate(self, prices_by_date=None):
-        """保存结果和报告并返回汇总指标；未传入价格宽表时才读取价格。"""
+    def evaluate(self, prices_by_date=None, plot_report=True):
+        """保存结果和报告并返回汇总指标；未传入价格宽表时才读取价格。批量评估传入 plot_report=False，待全部列完成后按因子统一生成报告。"""
         if self.update_all == 1 and self._clear_outputs:
             _clear_existing_results(self.output_dir, self.visualization_output_dir)
 
@@ -177,5 +177,7 @@ class SingleFactorEvaluation:
         evaluation.to_csv(output_path)
         visualizer = ResultsVisualizer(evaluation, self.factor_name, self.start_date, self.visualization_output_dir)
         self._save_stock_list(visualizer.preferred_group)
-        visualizer.plot_results_html()
+        # 报告按因子合并原始值和各滚动均值列，包含输出目录中该因子已有的全部列结果。
+        if plot_report:
+            ResultsVisualizer.plot_results_html(self.factor_path, self.output_dir, self.start_date, self.visualization_output_dir)
         return visualizer.summary()
