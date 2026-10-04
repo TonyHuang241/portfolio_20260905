@@ -23,6 +23,8 @@ class SingleFactorEvaluation:
         self.stock_pool = config["stock_pool"]
         self.stock_board = config["stock_board"]
         self.group_number = config.get("group_number", 10)
+        # 持有期（交易日数）：1 天为默认口径，持仓清单和批量指标都基于它，始终参与评估。
+        self.holding_periods = [1] + [holding_period for holding_period in config.get("holding_periods", [1]) if holding_period != 1]
         self.stock_info_path = Path(config["stock_minutes_dir"]).parent / "__daily_data_update" / "stock_info.csv"
         self._clear_outputs = factor_data is None
 
@@ -111,10 +113,12 @@ class SingleFactorEvaluation:
             _clear_existing_results(self.output_dir, self.visualization_output_dir)
 
         output_path = Path(self.output_dir) / f"{self.factor_name}.csv"
-        return_columns = [f"group_{group}" for group in range(1, self.group_number + 1)]
-        count_columns = [f"{column}_count" for column in return_columns]
-        turnover_columns = [f"{column}_turnover" for column in return_columns]
-        columns = return_columns + ["IC", "rankIC"] + count_columns + turnover_columns
+        # 持有 1 天的列沿用原列名，其他持有期的列名加 _{持有期}d 后缀，如 group_1_5d、IC_5d、group_1_5d_count、group_1_5d_turnover。
+        columns = []
+        for holding_period in self.holding_periods:
+            suffix = "" if holding_period == 1 else f"_{holding_period}d"
+            return_columns = [f"group_{group}{suffix}" for group in range(1, self.group_number + 1)]
+            columns += return_columns + [f"IC{suffix}", f"rankIC{suffix}"] + [f"{column}_count" for column in return_columns] + [f"{column}_turnover" for column in return_columns]
 
         # 读取现有的evaluation数据
         if self.update_all == 0 and output_path.is_file():
@@ -130,48 +134,72 @@ class SingleFactorEvaluation:
         if prices_by_date is None:
             prices_by_date = self.load_prices(self.backtest_data_dir)
 
-        # 持有到下一交易日的收益；当日有价、下一交易日无价（如停牌）时收益记为 0。
-        current_prices = prices_by_date.reindex(self.trade_dates)
-        next_returns = current_prices.shift(-1) / current_prices - 1
-        next_returns = next_returns.where(next_returns.notna() | current_prices.isna(), 0)
-        next_returns = next_returns.stack().rename("next_return").reset_index()
-        factor = self.factor.loc[self.factor["date"].isin(evaluation.index)]
-        factor = factor.merge(next_returns, on=["date", "code"], how="left")
-
-        evaluation[return_columns] = factor.groupby(["date", "group"])["next_return"].mean().unstack().reindex(index=evaluation.index, columns=range(1, self.group_number + 1)).to_numpy()
-        evaluation[count_columns] = factor.groupby(["date", "group"])["next_return"].count().unstack().reindex(index=evaluation.index, columns=range(1, self.group_number + 1)).fillna(0).to_numpy()
-
-        # IC 与 rankIC：按日在有效收益样本上计算 Pearson 相关系数，rankIC 先在当日内取排名。
-        factor = factor.dropna(subset=["next_return"])
-        factor["factor_rank"] = factor.groupby("date")["__factor"].rank()
-        factor["return_rank"] = factor.groupby("date")["next_return"].rank()
-        for column, x, y in (("IC", "__factor", "next_return"), ("rankIC", "factor_rank", "return_rank")):
-            factor["x"] = factor[x] - factor.groupby("date")[x].transform("mean")
-            factor["y"] = factor[y] - factor.groupby("date")[y].transform("mean")
-            factor["xy"] = factor["x"] * factor["y"]
-            factor["xx"] = factor["x"] ** 2
-            factor["yy"] = factor["y"] ** 2
-            sums = factor.groupby("date")[["xy", "xx", "yy"]].sum()
-            evaluation[column] = (sums["xy"] / np.sqrt(sums["xx"] * sums["yy"])).clip(-1, 1)
-
-        # 换手率：当日各组与上一交易日同组股票相比的变动比例；首个交易日没有上一期分组，记为空值。
+        # 在日期 × 股票的宽表上计算：当日分组、滞后一期的因子值，以及当日 10 点买入、持有到下一交易日 10 点的日收益。
         groups = self.factor.pivot(index="date", columns="code", values="group").reindex(evaluation.index)
-        previous_groups = groups.shift(1)
-        for group in range(1, self.group_number + 1):
-            turnover = pd.DataFrame(index=evaluation.index)
-            turnover["current"] = groups.eq(group).sum(axis=1)
-            turnover["previous"] = previous_groups.eq(group).sum(axis=1)
-            turnover["overlap"] = (groups.eq(group) & previous_groups.eq(group)).sum(axis=1)
-            turnover["turnover"] = 1 - turnover["overlap"] / turnover[["current", "previous"]].max(axis=1)
-            # 任一侧为空组时：两侧都空记 0，只有一侧为空记 0.5。
-            turnover["turnover"] = turnover["turnover"].where(turnover["current"].gt(0) & turnover["previous"].gt(0), (turnover["current"].gt(0).astype(int) + turnover["previous"].gt(0).astype(int)) / 2)
-            evaluation[f"group_{group}_turnover"] = turnover["turnover"]
-        evaluation.loc[evaluation.index[:1], turnover_columns] = np.nan
+        factor_values = self.factor.pivot(index="date", columns="code", values="__factor").reindex(evaluation.index)
+        # 当日有价、下一交易日无价（如停牌）时日收益记为 0；当日无价时为空，当日不能买入。
+        current_prices = prices_by_date.reindex(self.trade_dates)
+        daily_returns = current_prices.shift(-1) / current_prices - 1
+        daily_returns = daily_returns.where(daily_returns.notna() | current_prices.isna(), 0)
+        daily_returns = daily_returns.reindex(index=evaluation.index, columns=groups.columns)
+        # 买入后的持有日日收益为空（如停牌、退市）时记 0，股票仍留在持仓中。
+        held_returns = daily_returns.fillna(0)
 
-        # 已有完整结果的日期沿用旧值，只补充其余日期。
-        existing_dates = existing_evaluation.reindex(columns=count_columns + turnover_columns).dropna().index
+        # 每天按当日分组买入一批，只买当日有收益（可交易）的股票；lag 天前买入的一批在当日的收益为批内股票当日收益的等权均值。
+        cohort_returns = {}
+        cohort_counts = {}
+        for group in range(1, self.group_number + 1):
+            members = groups.eq(group) & daily_returns.notna()
+            for lag in range(max(self.holding_periods)):
+                held = members.shift(lag, fill_value=False)
+                cohort_counts[(group, lag)] = held.sum(axis=1)
+                cohort_returns[(group, lag)] = held_returns.where(held, 0).sum(axis=1) / cohort_counts[(group, lag)]
+
+        for holding_period in self.holding_periods:
+            suffix = "" if holding_period == 1 else f"_{holding_period}d"
+            # 持有 holding_period 天：同时持有最近 holding_period 天买入的各批，各批等权，组合日收益为各批当日收益的均值；起始阶段只平均已买入的批次。
+            for group in range(1, self.group_number + 1):
+                returns = pd.DataFrame(index=evaluation.index)
+                counts = pd.DataFrame(index=evaluation.index)
+                for lag in range(holding_period):
+                    returns[lag] = cohort_returns[(group, lag)]
+                    counts[lag] = cohort_counts[(group, lag)]
+                evaluation[f"group_{group}{suffix}"] = returns.mean(axis=1)
+                # 股票数量为各批的平均股票数，尚未买入的批次不计入。
+                evaluation[f"group_{group}{suffix}_count"] = counts.replace(0, np.nan).mean(axis=1).fillna(0)
+
+            # 持有期收益：买入后 holding_period 天的日收益按复利累计；买入日无收益的股票不参与，末尾不足 holding_period 天的日期为空。
+            holding_returns = 1
+            for lag in range(holding_period):
+                holding_returns = holding_returns * (1 + held_returns.shift(-lag))
+            holding_returns = (holding_returns - 1).where(daily_returns.notna())
+
+            # IC 与 rankIC：按日在因子值和持有期收益都有效的股票上计算 Pearson 相关系数，rankIC 先在当日内取排名。
+            factor_sample = factor_values.where(holding_returns.notna())
+            return_sample = holding_returns.where(factor_values.notna())
+            for column, x, y in ((f"IC{suffix}", factor_sample, return_sample), (f"rankIC{suffix}", factor_sample.rank(axis=1), return_sample.rank(axis=1))):
+                x = x.sub(x.mean(axis=1), axis=0)
+                y = y.sub(y.mean(axis=1), axis=0)
+                evaluation[column] = ((x * y).sum(axis=1) / np.sqrt((x ** 2).sum(axis=1) * (y ** 2).sum(axis=1))).clip(-1, 1)
+
+            # 换手率：当日买入的一批与当日卖出的一批（holding_period 天前买入）相比的变动比例，除以 holding_period 折算为组合日均换手率；前 holding_period 个交易日没有卖出的批次，记为空值。
+            previous_groups = groups.shift(holding_period)
+            for group in range(1, self.group_number + 1):
+                turnover = pd.DataFrame(index=evaluation.index)
+                turnover["current"] = groups.eq(group).sum(axis=1)
+                turnover["previous"] = previous_groups.eq(group).sum(axis=1)
+                turnover["overlap"] = (groups.eq(group) & previous_groups.eq(group)).sum(axis=1)
+                turnover["turnover"] = 1 - turnover["overlap"] / turnover[["current", "previous"]].max(axis=1)
+                # 任一侧为空组时：两侧都空记 0，只有一侧为空记 0.5。
+                turnover["turnover"] = turnover["turnover"].where(turnover["current"].gt(0) & turnover["previous"].gt(0), (turnover["current"].gt(0).astype(int) + turnover["previous"].gt(0).astype(int)) / 2)
+                evaluation[f"group_{group}{suffix}_turnover"] = turnover["turnover"] / holding_period
+            evaluation.loc[evaluation.index[:holding_period], [f"group_{group}{suffix}_turnover" for group in range(1, self.group_number + 1)]] = np.nan
+
+        # 已有完整结果的日期沿用旧值，只补充其余日期；持有期大于 1 天时末尾的 IC 尚未实现（为空），这些日期之后会重新计算。
+        check_columns = [column for column in columns if column.startswith(("IC", "rankIC")) or column.endswith(("_count", "_turnover"))]
+        existing_dates = existing_evaluation.reindex(columns=check_columns).dropna().index
         evaluation = evaluation.loc[~evaluation.index.isin(existing_dates)]
-        evaluation = evaluation.dropna(subset=return_columns + ["IC", "rankIC"], how="all")
+        evaluation = evaluation.dropna(subset=[f"group_{group}" for group in range(1, self.group_number + 1)] + ["IC", "rankIC"], how="all")
         evaluation = pd.concat([existing_evaluation, evaluation])
         evaluation = evaluation[~evaluation.index.duplicated(keep="last")].sort_index()
         evaluation.to_csv(output_path)

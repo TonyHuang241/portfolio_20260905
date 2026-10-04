@@ -64,6 +64,7 @@ factor_list.csv          # 高频因子清单及算子公式
 
 - **股票池**：按 `stock_board`（`main board` 或 `all`）筛选板块，再按上月末市值每日保留最小的 `stock_pool` 只股票。
 - **收益**：因子值滞后一天使用，当日 10:00 买入，持有到下一交易日 10:00。
+- **持有期**：`holding_periods` 设定持有的交易日数（默认 1、5、10、20 天）。持有 N 天时每个交易日买入一批、同时持有最近 N 批，各批等权，组合日收益取各批当日收益的均值；IC 和 RankIC 用之后 N 天的复利累计收益计算，换手率折算为日均口径。持有 1 天的结果始终计算，持仓清单和批量指标汇总都基于它。
 - **分组**：每日按因子值等分为 `group_number` 组，计算各组收益、IC、RankIC 和换手率。IC 均值为正时做多因子值最高的组，否则做多最低的组。不计交易成本。
 - **多因子分析**：批量模式还会计算全部原始因子的截面相关性矩阵，并对 `base_factor_list` 中的基础因子做截面回归，计算它们对其他因子的解释度 R²。
 
@@ -71,10 +72,10 @@ factor_list.csv          # 高频因子清单及算子公式
 
 | 路径 | 内容 |
 | --- | --- |
-| `numerical_output/<因子列>.csv` | 每日分组收益、IC、RankIC、股票数、换手率 |
+| `numerical_output/<因子列>.csv` | 每日分组收益、IC、RankIC、股票数、换手率；持有 1 天以外的列加 `_<N>d` 后缀，如 `group_1_5d`、`IC_5d` |
 | `numerical_output/factor_comparison.csv` | 批量模式的指标汇总 |
-| `visualization_output/<因子>_report.html` | 单因子交互式报告，每个因子一份，合并原始值和各滚动均值列：窗口对比、窗口详情、分年表现 |
-| `visualization_output/multi_factor_evaluation/multi_factor_evaluation_report.html` | 批量模式报告：指标对比、相关性矩阵、R² 曲线 |
+| `visualization_output/single_factor_evaluation/<因子>_report.html` | 单因子交互式报告，每个因子一份，合并原始值、各滚动均值列和各持有期：窗口对比、持有期对比、窗口详情、分年表现 |
+| `visualization_output/multi_factor_evaluation_report.html` | 批量模式报告：指标对比、相关性矩阵、R² 曲线；点击因子后在页面底部嵌入该因子的单因子报告 |
 | `stock_list/<因子列>.csv` | 历史每日多头持仓 |
 | `stock_list/next_day/<因子列>.csv` | 由最新收盘信号得到的下一交易日目标持仓 |
 

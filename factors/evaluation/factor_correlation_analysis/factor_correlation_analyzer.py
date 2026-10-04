@@ -22,7 +22,7 @@ class FactorCorrelationAnalyzer:
     def __init__(self, config):
         self.factor_dir = Path(config["factor_data_dir"])
         self.monthly_mkcap_path = Path(config["stock_minutes_dir"]).parent / "fundamentals" / "mkcap_monthly.parquet"
-        self.output_dir = Path(config["visualization_output_dir"]) / "multi_factor_evaluation"
+        self.output_dir = Path(config["visualization_output_dir"])
         self.start_date = config["start_date"]
         self.stock_pool = config["stock_pool"]
         self.stock_board = config["stock_board"]
@@ -131,7 +131,7 @@ class FactorCorrelationAnalyzer:
         return svg[svg.index("<svg"):]
 
     def plot_results_html(self, summary):
-        """计算相关性矩阵和每日 R²，与批量评估指标表一起写入 visualization_output_dir/multi_factor_evaluation。"""
+        """计算相关性矩阵和每日 R²，与批量评估指标表一起写入 visualization_output_dir/multi_factor_evaluation_report.html。"""
         factor = self._load_factors()
         correlation = self._correlation_matrix(factor)
         r2 = self._regression_r2(factor)
@@ -165,13 +165,15 @@ class FactorCorrelationAnalyzer:
         for factor_name in self.factor_list:
             button = f'<button type="button" data-target="factor-{escape(factor_name)}">{escape(factor_name)}</button>'
             factor_table = table.loc[table["因子"].isin(self.factor_columns[factor_name])].to_html(index=False, border=0, classes="metrics")
+            # 单因子报告在同级的 single_factor_evaluation 文件夹中，按相对路径嵌入页面底部，点击因子按钮时才加载。
+            report = f'<h3>单因子评估报告</h3><p>嵌入 {escape(factor_name)}_report.html，可在其中切换窗口对比、持有期对比、窗口详情和分年表现，并选择窗口、持有期（1 / 5 / 10 / 20 天等）和时间区间。</p><iframe class="factor-report" data-src="single_factor_evaluation/{escape(factor_name)}_report.html#embed" title="{escape(factor_name)} 单因子评估报告"></iframe>'
             if factor_name in self.base_factor_list:
                 base_buttons += button
-                factor_panels += f'<section class="panel" id="factor-{escape(factor_name)}" hidden><h2>{escape(factor_name)} · 基础因子{top_link}</h2><p>基础因子不参与解释回归，表格列出原始值和各滚动均值列的评估指标，收益和换手率口径见各列的单因子报告。</p><div class="content">{factor_table}</div></section>'
+                factor_panels += f'<section class="panel" id="factor-{escape(factor_name)}" hidden><h2>{escape(factor_name)} · 基础因子{top_link}</h2><p>基础因子不参与解释回归，表格列出原始值和各滚动均值列持有 1 天的评估指标，各持有期的结果见下方单因子报告。</p><div class="content">{factor_table}</div>{report}</section>'
             else:
                 explained_buttons += button
                 chart = self._chart(r2[self.factor_columns[factor_name]]) if r2[self.factor_columns[factor_name]].notna().any().any() else '<p class="empty">没有有效的 R²。</p>'
-                factor_panels += f'<section class="panel" id="factor-{escape(factor_name)}" hidden><h2>{escape(factor_name)} · 原始值平均 R² {ResultsVisualizer._format(r2[factor_name].mean())}{top_link}</h2><p>表格列出原始值和各滚动均值列的评估指标，平均 R² 为基础因子对该列每日截面解释度的均值。</p><div class="content">{factor_table}</div><h3>基础因子解释度 · 每日 R²</h3><p>原始值对 {base_factors} 的原始值回归，滚动均值列对基础因子相同窗口的滚动均值列回归（如 _5_m 对各基础因子的 _5_m）。灰线为原始值，蓝线为滚动均值列，窗口越长颜色越深，图例数字为全区间平均 R²。</p><div class="content">{chart}</div></section>'
+                factor_panels += f'<section class="panel" id="factor-{escape(factor_name)}" hidden><h2>{escape(factor_name)} · 原始值平均 R² {ResultsVisualizer._format(r2[factor_name].mean())}{top_link}</h2><p>表格列出原始值和各滚动均值列持有 1 天的评估指标，平均 R² 为基础因子对该列每日截面解释度的均值；各持有期的结果见下方单因子报告。</p><div class="content">{factor_table}</div><h3>基础因子解释度 · 每日 R²</h3><p>原始值对 {base_factors} 的原始值回归，滚动均值列对基础因子相同窗口的滚动均值列回归（如 _5_m 对各基础因子的 _5_m）。灰线为原始值，蓝线为滚动均值列，窗口越长颜色越深，图例数字为全区间平均 R²。</p><div class="content">{chart}</div>{report}</section>'
 
         html = f'''<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -189,6 +191,7 @@ nav .label {{ width: 72px; font-size: 13px; color: #6b7c94; }}
 nav button {{ padding: 7px 13px; font: inherit; font-size: 13px; color: #28578c; background: #f4f7fb; border: 1px solid #dce3ed; border-radius: 8px; cursor: pointer; }}
 nav button:hover {{ background: #e8f0fb; }} nav button.active {{ color: white; background: #28578c; border-color: #28578c; }}
 a.top {{ float: right; font-size: 13px; font-weight: 400; color: #28578c; text-decoration: none; }}
+iframe.factor-report {{ display: block; width: 100%; height: calc(100vh - 40px); min-height: 640px; margin-top: 8px; border: 1px solid #e3e9f2; border-radius: 12px; background: #f2f5fa; }}
 svg {{ display: block; width: 100%; height: auto; min-width: 560px; }}
 table {{ width: 100%; border-collapse: collapse; font-size: 13px; white-space: nowrap; }} th {{ background: #f4f7fb; color: #61718b; font-weight: 500; }}
 th, td {{ padding: 12px 13px; text-align: right; border-bottom: 1px solid #edf1f6; }} th:first-child, td:first-child {{ text-align: left; }} tbody tr:hover {{ background: #f4f8ff; }}
@@ -210,15 +213,19 @@ footer {{ padding: 4px 12px 20px; }} @media(max-width: 700px) {{ main {{ padding
 样本为因子目录中全部因子文件的原始值和滚动均值列，自 {self.start_date} 起；板块范围和股票池与单因子评估相同（{escape(str(self.stock_board))}，每日按上月末市值保留最小的 {self.stock_pool} 只股票），使用当日因子值，不做滞后。<br>
 各因子剔除无穷值后逐日截面标准化（减均值、除以样本标准差），未去极值。相关系数逐日按两两均有效的股票计算，再对日期取算术平均。<br>
 R² 每日以该因子列和对应窗口的全部基础因子列均有效的股票为样本做 OLS：原始值对基础因子原始值回归，滚动均值列对基础因子相同窗口的滚动均值列回归；有效股票数不多于参数个数的日期记为空，平均 R² 为每日 R² 的算术平均。<br>
+各因子页面底部嵌入的单因子报告读取同级 single_factor_evaluation 文件夹中的 &lt;因子&gt;_report.html，移动本报告时需连同该文件夹一起移动。<br>
 生成时间：{pd.Timestamp.now():%Y-%m-%d %H:%M:%S}。
 </footer></main>
 <script>
-// 点击按钮只显示对应页面，并跳转到该页面顶部。
+// 点击按钮只显示对应页面，并跳转到该页面顶部；页面中的单因子报告在首次打开时才加载。
 const buttons = document.querySelectorAll("nav button");
 for (const button of buttons) {{
     button.addEventListener("click", () => {{
         for (const item of buttons) item.classList.toggle("active", item === button);
         for (const panel of document.querySelectorAll(".panel")) panel.hidden = panel.id !== button.dataset.target;
+        for (const frame of document.getElementById(button.dataset.target).querySelectorAll("iframe[data-src]")) {{
+            if (!frame.getAttribute("src")) frame.setAttribute("src", frame.dataset.src);
+        }}
         document.getElementById(button.dataset.target).scrollIntoView({{ behavior: "smooth" }});
     }});
 }}
