@@ -752,7 +752,7 @@ body.embed header {{ display: none; }} body.embed main {{ padding-top: 4px; }}
 </div>
 
 <div id="page-holdings" role="tabpanel" aria-label="持有期对比" hidden>
-<section><h2><span class="window-name"></span> · 持有期指标对比</h2><p>每行一个持有期，均为顶栏所选窗口的结果；指标按所选区间计算，各持有期分别由区间 IC 均值确定多头组。持有 N 天的 IC 为因子值与之后 N 天累计收益的相关系数，可用来观察因子预测力随时间的衰减。收益为日收益口径，可直接比较不同持有期；换手率为日均换手率。点击持有期查看详情。</p><div id="holding-table" class="content"></div></section>
+<section><h2><span class="window-name"></span> · 持有期指标对比</h2><p>每行一个持有期，均为顶栏所选窗口的结果；指标按所选区间计算，各持有期分别由区间 IC 均值确定多头组。持有 N 天的 IC 为因子值与之后 N 天累计收益的相关系数，可用来观察因子预测力随时间的衰减。收益为日收益口径，可直接比较不同持有期；换手率为买入批与卖出批的成分变动比例，不折算为日均。点击持有期查看详情。</p><div id="holding-table" class="content"></div></section>
 <section><h2><span class="window-name"></span> · 各持有期分组年化收益</h2><p>每行一个持有期，从左到右为 G1 到 {last_group}；红色为正、蓝色为负，加框为该持有期的多头组。</p><div id="holding-heatmap" class="content"></div></section>
 <section><h2><span class="window-name"></span> · 各持有期累计收益</h2><p>按日复利累计，所选区间起点收益为 0；各持有期使用各自的多空方向。</p>
 <h3>多空组合</h3><div id="holding-ls" class="chart" data-label="各持有期多空累计收益"></div><h3>多头组合</h3><div id="holding-long" class="chart" data-label="各持有期多头累计收益"></div></section>
@@ -781,7 +781,7 @@ body.embed header {{ display: none; }} body.embed main {{ padding-top: 4px; }}
 窗口为因子文件中的各列：原始值和按交易日滚动的均值列（如 5 日均值对应 {title}_5_m），每个窗口单独分组回测，互不影响。<br>
 持有期：因子在 t 日收盘计算，t+1 日 10 点按分组买入；持有 1 天在 t+2 日 10 点卖出，持有 N 天在 t+1+N 日 10 点卖出。持有 N 天时每个交易日买入一批、同时持有最近 N 批，各批等权，组合日收益为各批当日收益的均值（重叠持仓，结果不依赖调仓起始日）；起始阶段只平均已买入的批次。
 每批只买入当日可交易（有收益）的股票，持有期内停牌的日收益记 0。持有 N 天的 IC / RankIC 为因子值与之后 N 天复利累计收益的截面相关系数，最后 N − 1 个评估日的收益尚未实现，记为空。
-持有 N 天的换手率为日均口径：当日买入批与当日卖出批（N 天前买入）的成分变动比例 ÷ N，前 N 个评估日为空；股票数量为各批的平均股票数。<br>
+持有 N 天的换手率为当日买入批与当日卖出批（N 天前买入）的成分变动比例，不除以 N，前 N 个评估日为空；股票数量为各批的平均股票数。<br>
 日收益使用小数；年化交易日数 {visualizers[0].periods_per_year:g}，年化无风险利率 {visualizers[0].risk_free_rate:.2%}。
 年化收益 = ∏(1 + 日收益)^(年化交易日数 / 有效交易日数) − 1；年化波动率 = 日收益样本标准差 × √年化交易日数。
 Sharpe = (平均日收益 − 等效日无风险利率) / 日收益样本标准差 × √年化交易日数。

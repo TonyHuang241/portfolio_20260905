@@ -182,7 +182,7 @@ class SingleFactorEvaluation:
                 y = y.sub(y.mean(axis=1), axis=0)
                 evaluation[column] = ((x * y).sum(axis=1) / np.sqrt((x ** 2).sum(axis=1) * (y ** 2).sum(axis=1))).clip(-1, 1)
 
-            # 换手率：当日买入的一批与当日卖出的一批（holding_period 天前买入）相比的变动比例，除以 holding_period 折算为组合日均换手率；前 holding_period 个交易日没有卖出的批次，记为空值。
+            # 换手率：当日买入的一批与当日卖出的一批（holding_period 天前买入）相比的变动比例，不除以 holding_period；前 holding_period 个交易日没有卖出的批次，记为空值。
             previous_groups = groups.shift(holding_period)
             for group in range(1, self.group_number + 1):
                 turnover = pd.DataFrame(index=evaluation.index)
@@ -192,7 +192,7 @@ class SingleFactorEvaluation:
                 turnover["turnover"] = 1 - turnover["overlap"] / turnover[["current", "previous"]].max(axis=1)
                 # 任一侧为空组时：两侧都空记 0，只有一侧为空记 0.5。
                 turnover["turnover"] = turnover["turnover"].where(turnover["current"].gt(0) & turnover["previous"].gt(0), (turnover["current"].gt(0).astype(int) + turnover["previous"].gt(0).astype(int)) / 2)
-                evaluation[f"group_{group}{suffix}_turnover"] = turnover["turnover"] / holding_period
+                evaluation[f"group_{group}{suffix}_turnover"] = turnover["turnover"]
             evaluation.loc[evaluation.index[:holding_period], [f"group_{group}{suffix}_turnover" for group in range(1, self.group_number + 1)]] = np.nan
 
         # 已有完整结果的日期沿用旧值，只补充其余日期；持有期大于 1 天时末尾的 IC 尚未实现（为空），这些日期之后会重新计算。
