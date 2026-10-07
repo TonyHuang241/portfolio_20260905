@@ -128,8 +128,11 @@ class DataUpdater:
         daily_stock.insert(0, "date", trade_date.strftime("%Y%m%d"))
         # 最低、最高收盘价相等即全天价格恒定，避免计算标准差及其浮点误差。
         daily_close = daily_minutes.groupby("code", sort=False)["close"].agg(["min", "max"])
+        # 全天成交量为 0（成交量缺失按 0 计）判定为停牌；当天没有该股票数据的，在因子构建补齐交易日后同样视为停牌。
+        daily_stock["is_suspended"] = daily_stock["volume"].eq(0)
         result = daily_minutes.loc[daily_minutes["trade_time"].eq(trade_date + pd.Timedelta(hours=10)) & daily_minutes["open"].ne(0)].copy()
         result["is_constant_close"] = result["code"].map(daily_close["min"].eq(daily_close["max"]))
+        result["is_suspended"] = result["code"].map(daily_stock.set_index("code")["is_suspended"])
         del daily_minutes, daily_close
         gc.collect()
         return result, daily_stock
@@ -241,6 +244,8 @@ class DataUpdater:
         adj_factors = self._calculate_adj_factors(daily_stock_data)
         daily_stock_data = self._adjust_prices(daily_stock_data, adj_factors, "date")
         daily_stock_data = daily_stock_data.sort_values(["date", "code"])
+        # 交易日序号：全部日线日期按先后连续编号，相邻交易日相差 1，个股序号不连续即中间有停牌；10 点数据使用同一套编号。
+        daily_stock_data["trade_day"] = daily_stock_data["date"].rank(method="dense").astype(int)
         daily_stock_data.to_parquet(daily_stock_file, index=False)
 
         # 合并新旧数据，按时间和股票代码去重、复权、排序后保存。
@@ -249,9 +254,14 @@ class DataUpdater:
         backtest_data = backtest_data.drop_duplicates(subset=["trade_time", "code"], keep="last")
         backtest_data = self._adjust_prices(backtest_data, adj_factors, "trade_time")
         backtest_data = backtest_data.sort_values(["trade_time", "code"])
+        # 原始数据的 date 列部分为空，统一由 trade_time 生成原始日期，再按日期匹配日线的交易日序号。
+        trade_days = daily_stock_data.drop_duplicates("date").set_index("date")["trade_day"]
+        backtest_data["date"] = self._format_dates(backtest_data["trade_time"].dt.normalize())
+        backtest_data["trade_day"] = backtest_data["date"].map(trade_days)
 
-        # 在过滤后的样本上按股票划分连续区间，日期间隔超过 15 个自然日时重新计数。
-        backtest_data["consecutive_trading_days"] = backtest_data.groupby("code")["trade_time"].diff().dt.days.gt(15)
-        backtest_data["consecutive_trading_days"] = backtest_data.groupby("code")["consecutive_trading_days"].cumsum()
-        backtest_data["consecutive_trading_days"] = backtest_data.groupby(["code", "consecutive_trading_days"]).cumcount() + 1
+        # 停牌日保留价格供回测估值，但不计入连续交易天数（记为空）；在非停牌样本上按股票划分连续区间，相邻记录的交易日序号相差超过 10（中间停牌 10 个交易日及以上）时重新计数。
+        trading_data = backtest_data.loc[~backtest_data["is_suspended"].eq(True), ["code", "trade_day"]]
+        trading_data["consecutive_trading_days"] = trading_data.groupby("code")["trade_day"].diff().gt(10)
+        trading_data["consecutive_trading_days"] = trading_data.groupby("code")["consecutive_trading_days"].cumsum()
+        backtest_data["consecutive_trading_days"] = trading_data.groupby(["code", "consecutive_trading_days"]).cumcount() + 1
         backtest_data.to_parquet(backtest_file, index=False)

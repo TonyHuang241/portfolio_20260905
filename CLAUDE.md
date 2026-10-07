@@ -12,6 +12,8 @@ A 股因子研究项目：整理分钟/日线行情，构建高频与中频因�
 | 因子构建 | `config/config_factor_construction.json` | `HighFreqFactorConstructor` / `MiddleFreqFactorConstructor` |
 | 因子评估 | `config/config_factor_evaluation.json` | `SingleFactorEvaluation` / `MultiFactorEvaluation` |
 
+Python 环境：自动使用 `~/.venvs/research/` 中的虚拟环境，运行任何 Python 命令时都用 `~/.venvs/research/bin/python`（例如 `~/.venvs/research/bin/python main.py`），不要用系统 Python。
+
 项目没有测试套件，改动后通过实际运行对应任务来验证。
 
 ## 代码书写规范

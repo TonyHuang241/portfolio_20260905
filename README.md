@@ -40,8 +40,8 @@ factor_list.csv          # 高频因子清单及算子公式
 | 输出 | 内容 |
 | --- | --- |
 | `stock_minutes/<年>/<日期>.parquet` | 按交易日拆分的分钟行情 |
-| `stock_daily/daily_stock_data.parquet` | 后复权日线 OHLC，附当日总市值 `mkcap`（元） |
-| `stock_daily/daily_stock_data_10am.parquet` | 每日 10:00 后复权价格，作为回测成交价 |
+| `stock_daily/daily_stock_data.parquet` | 后复权日线 OHLC，附当日总市值 `mkcap`（元）、交易日序号 `trade_day`（相邻交易日相差 1，个股序号不连续即有停牌）和停牌标记 `is_suspended`（全天成交量为 0；当天缺失数据在因子构建中同样视为停牌） |
+| `stock_daily/daily_stock_data_10am.parquet` | 每日 10:00 后复权价格，作为回测成交价；附与日线相同的 `trade_day`，停牌标记 `is_suspended`（停牌日保留价格，不计入连续交易天数，记为空），以及连续交易天数 `consecutive_trading_days`（停牌 10 个交易日及以上时重新计数） |
 | `fundamentals/financial_data.parquet` | 季度财报，流量变量转为 TTM，以公告日为 `date` |
 | `fundamentals/`、`limit_price/`、`stock_st_status/` | 日度和月度市值、涨跌停价、ST 状态 |
 

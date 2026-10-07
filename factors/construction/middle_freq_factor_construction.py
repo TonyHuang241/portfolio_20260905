@@ -103,11 +103,13 @@ class MiddleFreqFactorConstructor:
 
         history_days = 252 + max(factor.lookback_days for factor in self.factors.values())
         history_start = trade_dates[max(0, trade_dates.index(pending_dates[0]) - history_days)]
-        # 计算前剔除开盘价为 0、全天成交额为 0（停牌）的日线，以及 ST 和连续交易不满 250 天的观测；一字日和全天价格恒定但有成交的样本保留。
+        # 计算前剔除停牌（数据更新中按全天成交量为 0 判定）的日线，以及 ST 和连续交易不满 250 天的观测。
         daily = daily.loc[daily["date"].ge(history_start)]
-        daily = daily.loc[daily["open"].ne(0) & daily["money"].ne(0)]
+        daily = daily.loc[~daily["is_suspended"].eq(True)]
         stock_pool = self._select_stock_codes(trade_dates[trade_dates.index(history_start):])
         daily = daily.merge(stock_pool, on=["date", "code"], how="inner")
+        # 每只股票补齐全部交易日，被剔除的日期各列为空、不向前补全，使因子中按条滚动的窗口即为最近 N 个交易日。
+        daily = daily.set_index(["code", "date"]).reindex(pd.MultiIndex.from_product([daily["code"].unique(), sorted(daily["date"].unique())], names=["code", "date"])).reset_index()
         # 财务数据不按日线回看期截断，保留全部历史公告，供需要同比等多期数据的因子使用。
         financial_data = pd.read_parquet(self.financial_data_path)
         os.makedirs(self.output_dir, exist_ok=True)

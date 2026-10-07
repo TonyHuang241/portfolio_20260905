@@ -72,9 +72,8 @@ class HighFreqFactorConstructor:
         # 只格式化不同日期，避免对每日上百万条分钟记录重复转换字符串。
         minutes["date"] = minutes["date"].map({date: date.strftime("%Y%m%d") for date in minutes["date"].dropna().unique()})
 
-        # 任一条开盘价为零或全天成交额为零（停牌），则清空该股票当天全部行情，保留代码和时间；一字日和全天价格恒定但有成交的样本保留。
-        invalid_day = minutes["open"].eq(0).groupby([minutes["code"], minutes["date"]]).transform("any")
-        invalid_day |= minutes.groupby(["code", "date"])["money"].transform("sum").eq(0)
+        # 全天成交量为 0（停牌，成交量缺失按 0 计），则清空该股票当天全部行情，保留代码和时间。
+        invalid_day = minutes.groupby(["code", "date"])["volume"].transform("sum").eq(0)
         minutes.loc[invalid_day, minutes.columns.difference(["code", "trade_time", "date"])] = np.nan
 
         results = {}
@@ -85,17 +84,13 @@ class HighFreqFactorConstructor:
         return trade_date, results
 
     def _select_stock_codes(self, trade_dates):
-        """基于日频数据生成每日股票池：主板、非 ST、连续交易至少 250 天。"""
-        stock_pool = pd.read_parquet(os.path.join(self.stock_daily_dir, "daily_stock_data.parquet"), columns=["code", "date", "open"])
+        """基于 10 点回测数据生成每日股票池：主板、非 ST、连续交易至少 250 天；连续交易天数沿用数据更新按交易日序号算出的结果，与中频因子一致。"""
+        stock_pool = pd.read_parquet(os.path.join(self.stock_daily_dir, "daily_stock_data_10am.parquet"), columns=["code", "trade_time"], filters=[("consecutive_trading_days", ">=", 250)])
         stock_pool = stock_pool.loc[stock_pool["code"].str.startswith(("000", "001", "002", "003", "600", "601", "603", "605"))]
-        stock_pool = stock_pool.loc[stock_pool["open"].ne(0)].copy()
-        stock_pool = stock_pool.sort_values(["code", "date"])
-        stock_pool["trade_time"] = pd.to_datetime(stock_pool["date"], format="%Y%m%d")
-        # 使用完整历史计数；相邻记录间隔超过 15 个自然日时重新计数。
-        stock_pool["consecutive_trading_days"] = stock_pool.groupby("code")["trade_time"].diff().dt.days.gt(15)
-        stock_pool["consecutive_trading_days"] = stock_pool.groupby("code")["consecutive_trading_days"].cumsum()
-        stock_pool["consecutive_trading_days"] = stock_pool.groupby(["code", "consecutive_trading_days"]).cumcount() + 1
-        stock_pool = stock_pool.loc[stock_pool["date"].isin(trade_dates) & stock_pool["consecutive_trading_days"].ge(250), ["date", "code"]]
+        # 只对唯一交易日做一次字符串格式化，再按编码映射回每一行。
+        day_codes, days = pd.factorize(stock_pool["trade_time"].dt.normalize())
+        stock_pool["date"] = days.strftime("%Y%m%d").take(day_codes)
+        stock_pool = stock_pool.loc[stock_pool["date"].isin(trade_dates), ["date", "code"]]
 
         stock_st_status = pd.read_parquet(os.path.join(self.stock_st_status_dir, "stock_st_status.parquet"), columns=["code", "date", "is_st"])
         stock_pool = stock_pool.merge(stock_st_status, on=["code", "date"], how="left")
@@ -153,11 +148,15 @@ class HighFreqFactorConstructor:
             factor = pd.concat(factor_data.pop(factor_name), ignore_index=True)
             factor = factor.drop_duplicates(["code", "date"], keep="last")
             factor = factor.sort_values(["code", "date"]).reset_index(drop=True)
+            # 每只股票补齐全部交易日，停牌等缺失日期因子值为空、不向前补全，使按条滚动的窗口即为最近 N 个交易日；滚动后去掉补齐的行。
+            factor["is_calculated"] = True
+            factor = factor.set_index(["code", "date"]).reindex(pd.MultiIndex.from_product([factor["code"].unique(), sorted(factor["date"].unique())], names=["code", "date"])).reset_index()
             factor_by_code = factor.groupby("code")[factor_name]
             for window in (5, 20, 60, 120, 250):
                 rolling = factor_by_code.rolling(window)
                 factor[f"{factor_name}_{window}_m"] = rolling.mean().droplevel(0).reindex(factor.index)
                 # factor[f"{factor_name}_{window}_std"] = rolling.std().droplevel(0).reindex(factor.index)
+            factor = factor.loc[factor["is_calculated"].eq(True)].drop(columns="is_calculated")
 
             factor.to_parquet(f"{self.output_dir}/{factor_name}.parquet", index=False)
             del factor, factor_by_code, rolling
