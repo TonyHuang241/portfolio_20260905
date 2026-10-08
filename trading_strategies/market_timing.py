@@ -23,7 +23,6 @@ class MarketTiming:
         self.select_size = config["select_size"]
         self.timing_window = config["timing_window"]
         self.fee_rate = config["fee_rate"]
-        self.slippage_rate = config["slippage_rate"]
 
     def select_stocks(self):
         """按板块筛选后，每日取 pool_factor 排名前 pool_size 只作为股票池，并在池内按 select_factor 排名。"""
@@ -69,5 +68,5 @@ class MarketTiming:
         stocks.insert(3, "name", stocks["code"].map(stock_info.set_index("code")["name"]))
         os.makedirs(self.output_dir, exist_ok=True)
         stocks.to_csv(os.path.join(self.output_dir, f"{type(self).__name__}Holdings.csv"), index=False, encoding="utf-8-sig")
-        StrategyEvaluation(stocks, self.backtest_data_dir, self.limit_price_dir, self.output_dir, self.fee_rate, self.slippage_rate).evaluate()
+        StrategyEvaluation(stocks, self.backtest_data_dir, self.limit_price_dir, self.output_dir, self.fee_rate).evaluate()
         return stocks

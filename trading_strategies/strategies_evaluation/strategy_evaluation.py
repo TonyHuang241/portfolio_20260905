@@ -90,13 +90,12 @@ drawCharts();
 window.addEventListener("resize", drawCharts);
 """
 
-    def __init__(self, holdings, backtest_data_dir, limit_price_dir, output_dir, fee_rate, slippage_rate):
+    def __init__(self, holdings, backtest_data_dir, limit_price_dir, output_dir, fee_rate):
         self.holdings = holdings
         self.backtest_data_dir = backtest_data_dir
         self.limit_price_dir = limit_price_dir
         self.output_dir = output_dir
         self.fee_rate = fee_rate
-        self.slippage_rate = slippage_rate
 
     @staticmethod
     def _metrics(result, column):
@@ -117,13 +116,18 @@ window.addEventListener("resize", drawCharts);
         weights = weights.reindex(index=returns.index, columns=returns.columns, fill_value=0)
 
         # 10 点价格（还原为未复权价）达到涨停价时不能买入或加仓，达到跌停价时不能卖出或减仓；unlimited 为 1 时无涨跌停限制。
-        limits = pd.read_parquet(self.backtest_data_dir, columns=["code", "date", "close", "adj_factor"])
+        limits = pd.read_parquet(self.backtest_data_dir, columns=["code", "date", "close", "high", "low", "adj_factor"])
         limits = limits.merge(pd.read_parquet(os.path.join(self.limit_price_dir, "limit_price.parquet")), on=["code", "date"])
+        # 滑点：买入按 10 点最高价、卖出按 10 点最低价成交，相对 10 点收盘价损失的成交金额比例；需在 close 还原为未复权价之前计算。
+        limits["buy_slippage"] = 1 - limits["close"] / limits["high"]
+        limits["sell_slippage"] = 1 - limits["low"] / limits["close"]
         limits["close"] = (limits["close"] / limits["adj_factor"]).round(2)
         limits["up_limit"] = limits["close"].ge(limits["high_limit"]) & limits["unlimited"].eq(0)
         limits["down_limit"] = limits["close"].le(limits["low_limit"]) & limits["unlimited"].eq(0)
         up_limit = limits.pivot(index="date", columns="code", values="up_limit").reindex(index=returns.index, columns=returns.columns).eq(True).to_numpy()
         down_limit = limits.pivot(index="date", columns="code", values="down_limit").reindex(index=returns.index, columns=returns.columns).eq(True).to_numpy()
+        buy_slippage = limits.pivot(index="date", columns="code", values="buy_slippage").reindex(index=returns.index, columns=returns.columns).fillna(0)
+        sell_slippage = limits.pivot(index="date", columns="code", values="sell_slippage").reindex(index=returns.index, columns=returns.columns).fillna(0)
 
         # 逐日调仓：跌停的原持仓保持原权重，其余资金等分给未被锁定的目标股票，涨停股票的权重不超过前一日；买不进的部分持有现金。
         target = weights.to_numpy() > 0
@@ -143,8 +147,8 @@ window.addEventListener("resize", drawCharts);
         result["return"] = (weights * returns.fillna(0)).sum(axis=1)
         result["turnover"] = weights.diff().fillna(weights).abs().sum(axis=1)
         result["net_return"] = result["return"] - result["turnover"] * self.fee_rate
-        # 每笔成交的滑点为成交权重 × slippage_rate，方向随机（+1 为成交价不利、-1 为有利），固定随机种子保证结果可复现。
-        result["slippage_return"] = result["net_return"] - (weights.diff().fillna(weights).abs() * np.random.default_rng(0).choice([-1, 1], size=weights.shape)).sum(axis=1) * self.slippage_rate
+        # 加仓部分按买入滑点、减仓部分按卖出滑点扣除。
+        result["slippage_return"] = result["net_return"] - (weights.diff().fillna(weights).clip(lower=0) * buy_slippage + weights.diff().fillna(weights).clip(upper=0).abs() * sell_slippage).sum(axis=1)
 
         # 绩效表：全区间三种口径对比，分年按年份排列、同一年内依次为各口径。
         rows = []
@@ -169,7 +173,7 @@ window.addEventListener("resize", drawCharts);
 
         html = f'''<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{strategy_name} 策略回测</title><style>{self.STYLE}</style></head><body><main>
 <header><div class="eyebrow">TRADING STRATEGY / BACKTEST REPORT</div><h1>{strategy_name} · 策略回测报告</h1>
-<p>{pd.Timestamp(result.index[0]):%Y-%m-%d} — {pd.Timestamp(result.index[-1]):%Y-%m-%d} · {len(result):,} 个交易日 · 单边费率 {self.fee_rate:.2%} · 滑点 ±{self.slippage_rate:.2%}（随机方向）</p></header>
+<p>{pd.Timestamp(result.index[0]):%Y-%m-%d} — {pd.Timestamp(result.index[-1]):%Y-%m-%d} · {len(result):,} 个交易日 · 单边费率 {self.fee_rate:.2%} · 滑点：买入按 10 点最高价、卖出按 10 点最低价</p></header>
 <div class="caption">扣费+滑点口径 · 全区间</div><div class="stats">{cards}</div>
 <section><h2>累积净值</h2><p>按日复利累计，起点净值为 1。</p><div class="legend">{legend}</div><div id="nav" class="chart"></div></section>
 <section><h2>动态回撤</h2><p>当前净值 / 历史最高净值 − 1，包含初始净值 1。</p><div class="legend">{legend}</div><div id="drawdown" class="chart"></div></section>
@@ -177,7 +181,7 @@ window.addEventListener("resize", drawCharts);
 <section><h2>分年绩效</h2><p>每年单独计算，回撤每年重置；首尾年份可能不完整。</p><div class="content">{yearly_table}</div></section>
 <footer><b>计算口径</b><br>信号日收盘后确定持仓，下一交易日 10 点等权调仓，持有到再下一交易日 10 点；尚无收益的下一交易日不参与评估。
 10 点价格达到涨停价不买入、达到跌停价不卖出，买不进的部分持有现金；停牌或无价格的股票当日收益记 0。<br>
-扣费 = 买卖双边换手 × 单边费率；滑点在扣费基础上，每笔成交按成交权重 × 滑点率随机加减（方向随机、固定随机种子）。
+扣费 = 买卖双边换手 × 单边费率；滑点在扣费基础上，买入按 10 点分钟线最高价、卖出按最低价成交，扣除买入权重 × (1 − 收盘价 / 最高价) 与卖出权重 × (1 − 最低价 / 收盘价)。
 年化收益 = 净值^(252 / 交易日数) − 1；Sharpe 不扣无风险利率；日胜率只统计有持仓的交易日；日均换手为买卖双边。生成时间：{pd.Timestamp.now():%Y-%m-%d %H:%M}。</footer>
 </main><div id="tooltip" hidden></div>
 <script id="report-data" type="application/json">{json.dumps({"dates": result.index.tolist(), "series": series}, ensure_ascii=False)}</script><script>{self.SCRIPT}</script></body></html>'''
