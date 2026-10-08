@@ -9,8 +9,10 @@ from factors.construction.high_freq_factor_construction import HighFreqFactorCon
 from factors.construction.middle_freq_factor_construction import MiddleFreqFactorConstructor
 from factors.evaluation.single_factor_evaluation_v1 import SingleFactorEvaluation
 from factors.evaluation.multi_factor_evaluation import MultiFactorEvaluation
+from trading_strategies.market_timing import MarketTiming
 
 CONFIG_FILE = "portfolio_20260905/config/config_factor_evaluation.json"
+# CONFIG_FILE = "portfolio_20260905/config/config_trading_strategies/config_market_timing.json"
 CONFIG_LOCAL_FILE = Path(__file__).resolve().parent / "config_local.json"
 
 def load_config(config_file=CONFIG_FILE):
@@ -45,3 +47,7 @@ if __name__ == "__main__":
         evaluator_class = MultiFactorEvaluation if config.get("evaluation_mode", "single") == "multi" else SingleFactorEvaluation
         data_evaluator = evaluator_class(config)
         data_evaluator.evaluate()
+
+    if config_name == "config_market_timing.json":
+        market_timing = MarketTiming(config)
+        market_timing.run()

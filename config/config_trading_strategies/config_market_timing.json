@@ -1,0 +1,20 @@
+{
+    "factor_data_dir": "a_share_market_data/factors/",
+    "stock_daily_dir": "a_share_market_data/stock_daily/",
+    "backtest_data_dir": "a_share_market_data/stock_daily/daily_stock_data_10am.parquet",
+    "limit_price_dir": "a_share_market_data/limit_price/",
+    "stock_info_path": "a_share_market_data/__daily_data_update/stock_info.csv",
+    "output_dir": "a_share_market_data/strategies_evaluation_output/",
+
+    "start_date": "20200101",
+    "stock_board": "main board",
+    "pool_factor": "AmihudIlliquidity_20_m",
+    "pool_ascending": false,
+    "pool_size": 100,
+    "select_factor": "Volatility1m",
+    "select_ascending": true,
+    "select_size": 10,
+    "timing_window": 20,
+    "fee_rate": 0.001,
+    "slippage_rate": 0.005
+}
