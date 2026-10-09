@@ -11,7 +11,7 @@ from factors.evaluation.single_factor_evaluation_v1 import SingleFactorEvaluatio
 from factors.evaluation.multi_factor_evaluation import MultiFactorEvaluation
 from trading_strategies.market_timing import MarketTiming
 
-# CONFIG_FILE = "portfolio_20260905/config/config_factor_evaluation.json"
+# CONFIG_FILE = "portfolio_20260905/config/config_factor_construction.json"
 CONFIG_FILE = "portfolio_20260905/config/config_trading_strategies/config_market_timing.json"
 CONFIG_LOCAL_FILE = Path(__file__).resolve().parent / "config_local.json"
 

@@ -22,7 +22,7 @@
     "output_dir": "a_share_market_data/factors/",
     
     "processes": 16,
-    "start_date": "20180101",
+    "start_date": "20150101",
     "end_date": "20260930",
     "update_all": 1
 }

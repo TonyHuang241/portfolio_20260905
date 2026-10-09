@@ -80,31 +80,36 @@ class DataUpdater:
         mkcap_monthly = mkcap_monthly.drop_duplicates(subset=["code", "date"], keep="last")
         mkcap_monthly.to_parquet(fundamentals_dir / "mkcap_monthly.parquet", index=False)
 
-        # 季度财务数据：公告日记为 date，与日线对齐；报告期见 year、quarter 列。
+        # 季度财务数据：报告期末记为 report_date（数据对应的时间），公告日记为 date（与日线对齐和匹配时使用）；报告期另见 year、quarter 列。
         financial_data = pd.read_csv(Path(self.new_data_dir) / "fundamentals_quarterly.csv", dtype={"secu_code": str, "publ_date": str})
-        financial_data = financial_data.rename(columns={"secu_code": "code", "publ_date": "date"})
+        financial_data = financial_data.rename(columns={"secu_code": "code", "publ_date": "date", "end_date": "report_date"})
         financial_data["code"] = self._format_codes(financial_data["code"])
         financial_data["date"] = self._format_dates(financial_data["date"])
+        financial_data["report_date"] = self._format_dates(financial_data["report_date"])
 
         # 流量变量为年内累计值，换成 TTM：Q1-Q3 为 上年年报 + 本期累计 - 上年同期累计，Q4 为当年年报；时点变量保留期末原值。
+        # 同时计算当季度值 *_q：Q1 为本期累计，Q2-Q4 为本期累计 - 同年上一季度累计；上一季度缺失时为空。
         flow_columns = ["total_operating_revenue", "operating_revenue", "operating_cost", "operating_profit", "total_profit", "net_profit", "np_parent_company_owners", "r_and_d", "net_operate_cash_flow", "net_invest_cash_flow", "net_finance_cash_flow", "cash_equivalent_increase"]
         financial_data["previous_year"] = financial_data["year"] - 1
+        financial_data["previous_quarter"] = financial_data["quarter"] - 1
         financial_data["annual_quarter"] = 4
         financial_data = financial_data.join(financial_data.set_index(["code", "year", "quarter"])[flow_columns].add_suffix("_last_year"), on=["code", "previous_year", "quarter"])
         financial_data = financial_data.join(financial_data.set_index(["code", "year", "quarter"])[flow_columns + ["date"]].add_suffix("_last_annual"), on=["code", "previous_year", "annual_quarter"])
+        financial_data = financial_data.join(financial_data.set_index(["code", "year", "quarter"])[flow_columns].add_suffix("_last_quarter"), on=["code", "year", "previous_quarter"])
         for column in flow_columns:
             financial_data[f"{column}_ttm"] = financial_data[f"{column}_last_annual"] + financial_data[column] - financial_data[f"{column}_last_year"]
             financial_data[f"{column}_ttm"] = financial_data[f"{column}_ttm"].where(financial_data["quarter"].ne(4), financial_data[column])
-            financial_data = financial_data.drop(columns=[column, f"{column}_last_year", f"{column}_last_annual"])
+            financial_data[f"{column}_q"] = financial_data[column].where(financial_data["quarter"].eq(1), financial_data[column] - financial_data[f"{column}_last_quarter"])
+            financial_data = financial_data.drop(columns=[column, f"{column}_last_year", f"{column}_last_annual", f"{column}_last_quarter"])
 
         # 上年年报晚于本期公告时（如 2020 年年报延期），TTM 要到年报公告后才可得，date 顺延至年报公告日。
         financial_data["date"] = financial_data["date"].where(financial_data["quarter"].eq(4) | ~financial_data["date"].lt(financial_data["date_last_annual"]), financial_data["date_last_annual"])
-        financial_data = financial_data.drop(columns=["end_date", "previous_year", "annual_quarter", "date_last_annual"])
+        financial_data = financial_data.drop(columns=["previous_year", "previous_quarter", "annual_quarter", "date_last_annual"])
 
-        # 没有公告日的报告期无法确定可用时间，剔除；同一天公告多期报告（多为年报与一季报同日）时只保留最新报告期，使 code、date 唯一。
+        # 没有公告日的报告期无法确定可用时间，剔除；每个报告期保留一行，code、report_date 唯一。同一天公告多期报告（多为年报与一季报同日）时各期都保留，按 date 匹配时同日取 report_date 最新的一期。
         financial_data = financial_data.loc[financial_data["date"].notna()]
-        financial_data = financial_data.sort_values(["code", "date", "year", "quarter"])
-        financial_data = financial_data.drop_duplicates(["code", "date"], keep="last")
+        financial_data = financial_data.sort_values(["code", "date", "report_date"])
+        financial_data = financial_data.drop_duplicates(["code", "report_date"], keep="last")
         financial_data.to_parquet(fundamentals_dir / "financial_data.parquet", index=False)
 
     @staticmethod

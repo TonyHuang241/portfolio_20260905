@@ -9,7 +9,7 @@
     "base_factor_list": ["MarketBeta", "LnSize", "BM", "Mom1y"],
     
     "specified_column": "",
-    "start_date": "20200101",
+    "start_date": "20180101",
     "stock_pool": 2000,
     "stock_board": "main board",
     "group_number": 10,
