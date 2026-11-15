@@ -8,11 +8,12 @@ A 股因子研究项目：整理分钟/日线行情，构建高频与中频因�
 
 | 任务 | 配置文件 | 入口类 |
 | --- | --- | --- |
-| 数据更新 | `config/config_data_update.json` | `DataUpdater` |
-| 因子构建 | `config/config_factor_construction.json` | `HighFreqFactorConstructor` / `MiddleFreqFactorConstructor` |
-| 因子评估 | `config/config_factor_evaluation.json` | `SingleFactorEvaluation` / `MultiFactorEvaluation` |
+| 数据更新 | `config/config_data_update.json` | `DataUpdater`（`main.py` 只调用 `update_data/update_data.py` 的 `run(config)`） |
+| 因子构建 | `config/config_factor_construction.json` | `HighFreqFactorConstructor` / `MiddleFreqFactorConstructor`（`main.py` 只调用 `factors/construction/factors.py` 的 `run(config, construction_mode)`） |
+| 因子评估 | `config/config_factor_evaluation.json` | `SingleFactorEvaluation` / `MultiFactorEvaluation`（`main.py` 只调用 `factors/evaluation/evaluation.py` 的 `run(config, evaluation_mode)`） |
+| 交易策略 | `config/config_trading_strategies.json` | `StrategyEvaluation`（`main.py` 只调用 `trading_strategies/evaluation.py` 的 `run(config)`） |
 
-Python 环境：自动使用 `~/.venvs/research/` 中的虚拟环境，运行任何 Python 命令时都用 `~/.venvs/research/bin/python`（例如 `~/.venvs/research/bin/python main.py`），不要用系统 Python。
+Python 环境：运行任何 Python 命令时，都用 `config_local.json` 中 `python_path` 指定的解释器，不要用系统 Python。
 
 项目没有测试套件，改动后通过实际运行对应任务来验证。
 
@@ -26,7 +27,7 @@ Python 环境：自动使用 `~/.venvs/research/` 中的虚拟环境，运行任
 
 ```python
 # 推荐：一个操作一行，即使这一行比较长
-constructor_class = {"high": HighFreqFactorConstructor, "middle": MiddleFreqFactorConstructor}[config.get("construction_mode", "high")]
+constructor_class = {"high": HighFreqFactorConstructor, "middle": MiddleFreqFactorConstructor}[construction_mode]
 stock_st_status = pd.read_parquet(os.path.join(self.stock_st_status_dir, "stock_st_status.parquet"), columns=["code", "date", "is_st"])
 
 # 不推荐：一个操作被无意义地拆成多行
@@ -58,6 +59,7 @@ factor = factor.loc[factor["date"].isin(pending_dates)].merge(stock_pool, on=["c
 - **新增中频因子**：在 [factors/construction/middle_freq_factor_calculation/](factors/construction/middle_freq_factor_calculation/) 下同样处理，继承 `_BaseMiddleFreqFactor`，并设置 `lookback_days`；不要修改共享的 `self.daily`。
 - 因子类需带上 `factor_name`、`factor_type`、`calculation_logic` 等类属性，写法参照同目录下的现有因子。
 - 因子文件名即类名，构建器按文件名自动注册，不需要改动构建器代码。
+- **新增策略**：在 [trading_strategies/strategies/](trading_strategies/strategies/) 下新建与类名同名的文件，`__init__(config)` 从 `config["strategies"][类名]` 读专有参数，`run()` 保存并返回持仓清单（列 `strategy`、`date`、`trade_date`、`code`、`name`、可选的因子值列、`hold`，含最后一个尚无收益的下一交易日），然后在 `config/config_trading_strategies.json` 的 `strategies` 里加对应子 dict。`evaluation.py` 按 `strategy` 字段的文件名加载策略，不需要改动入口和回测 / 报告代码。
 
 ### 3. 用简单函数，少用高级函数
 

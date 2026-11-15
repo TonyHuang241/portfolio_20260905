@@ -270,3 +270,15 @@ class DataUpdater:
         trading_data["consecutive_trading_days"] = trading_data.groupby("code")["consecutive_trading_days"].cumsum()
         backtest_data["consecutive_trading_days"] = trading_data.groupby(["code", "consecutive_trading_days"]).cumcount() + 1
         backtest_data.to_parquet(backtest_file, index=False)
+
+
+def run(config):
+    """main.py 调用的唯一入口：按 config 整理原始行情，再生成回测数据。"""
+    data_updater = DataUpdater(config)
+    data_updater.integrate_data()
+    data_updater.generate_backtest_data()
+
+
+if __name__ == "__main__":
+    from main import load_config
+    run(load_config("portfolio_20260905/config/config_data_update.json"))

@@ -6,19 +6,15 @@
     "stock_st_status_dir": "a_share_market_data/stock_st_status/",
     "stock_info_path": "a_share_market_data/__daily_data_update/stock_info.csv",
     "output_dir": "a_share_market_data/strategies_evaluation_output/",
-
+    "holdings_path": "",
+    "strategy": "MarketTiming",
     "start_date": "20150101",
-    "stock_board": "main board",
-    "pool_factor": "AmihudIlliquidity_20_m",
-    "pool_ascending": false,
-    "pool_size": 100,
-    "select_factor": "Volatility1m",
-    "select_ascending": true,
-    "select_size": 10,
-    "timing_window": 20,
-    "comovement_size": 400,
-    "comovement_window": 20,
-    "comovement_lookback": 750,
-    "comovement_threshold": 0.5,
-    "fee_rate": 0.001
+    "fee_rate": 0.001,
+    "strategies": {
+        "MarketTiming": {
+            "stock_board": "main board", "pool_factor": "AmihudIlliquidity_20_m", "pool_ascending": false, "pool_size": 100,
+            "select_factor": "Volatility1m", "select_ascending": true, "select_size": 10,
+            "timing_window": 20, "comovement_size": 400, "comovement_window": 20, "comovement_lookback": 750, "comovement_threshold": 0.5
+        }
+    }
 }

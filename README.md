@@ -13,11 +13,12 @@
 
 | 任务 | `CONFIG_FILE` | 入口类 |
 | --- | --- | --- |
-| 数据更新 | `portfolio_20260905/config/config_data_update.json` | `DataUpdater` |
-| 因子构建 | `portfolio_20260905/config/config_factor_construction.json` | `HighFreqFactorConstructor` / `MiddleFreqFactorConstructor` |
-| 因子评估 | `portfolio_20260905/config/config_factor_evaluation.json` | `SingleFactorEvaluation` / `MultiFactorEvaluation` |
+| 数据更新 | `portfolio_20260905/config/config_data_update.json` | `DataUpdater`（经 `update_data/update_data.py` 的 `run(config)` 调用） |
+| 因子构建 | `portfolio_20260905/config/config_factor_construction.json` | `HighFreqFactorConstructor` / `MiddleFreqFactorConstructor`（经 `factors/construction/factors.py` 的 `run(config, construction_mode)` 调用） |
+| 因子评估 | `portfolio_20260905/config/config_factor_evaluation.json` | `SingleFactorEvaluation` / `MultiFactorEvaluation`（经 `factors/evaluation/evaluation.py` 的 `run(config, evaluation_mode)` 调用） |
+| 交易策略 | `portfolio_20260905/config/config_trading_strategies.json` | `StrategyEvaluation`（经 `trading_strategies/evaluation.py` 的 `run(config)` 调用） |
 
-第一次使用时按表格顺序执行。仓库不含行情数据，需要自行准备。三个任务都有 `update_all` 字段：设为 `1` 时全量重算并覆盖结果，设为 `0` 时只补算缺失的日期。
+第一次使用时按表格顺序执行。仓库不含行情数据，需要自行准备。前三个任务都有 `update_all` 字段：设为 `1` 时全量重算并覆盖结果，设为 `0` 时只补算缺失的日期。
 
 依赖：pandas、numpy、pyarrow、matplotlib、tqdm。
 
@@ -25,11 +26,12 @@
 
 ```text
 main.py                  # 入口与配置加载
-config/                  # 三类任务的配置
-update_data/             # 行情整理、复权、生成回测数据
+config/                  # 各类任务的配置
+update_data/             # 数据更新：update_data.py 为唯一入口，行情整理、复权、生成回测数据
 construct_asset_pool/    # 下载股票基础信息与交易日历（单独运行）
-factors/construction/    # 因子构建器与因子实现（高频 / 中频）
-factors/evaluation/      # 单因子与批量评估、相关性分析、HTML 报告
+factors/construction/    # 因子构建：factors.py 为唯一入口，构建器与因子实现分高频 / 中频
+factors/evaluation/      # 因子评估：evaluation.py 为唯一入口，含单因子与批量评估、相关性分析、HTML 报告
+trading_strategies/      # 交易策略：evaluation.py 为唯一入口，strategies/ 放策略，strategies_evaluation/ 放回测与报告
 factor_list.csv          # 高频因子清单及算子公式
 ```
 
@@ -80,6 +82,24 @@ factor_list.csv          # 高频因子清单及算子公式
 | `stock_list/next_day/<因子列>.csv` | 由最新收盘信号得到的下一交易日目标持仓 |
 
 持仓清单会附上 `__daily_data_update/stock_info.csv` 中的股票名称、行业等信息。
+
+## 交易策略
+
+`config/config_trading_strategies.json` 中公共字段放在顶层，各策略的专有参数放在 `strategies` 下以策略类名为键的子 dict 里，`strategy` 指定运行哪个策略。代码分三层：
+
+1. **策略**（[trading_strategies/strategies/](trading_strategies/strategies/)）：文件名即类名，输出每日持仓清单，列为 `strategy`、`date`（信号日）、`trade_date`（实际交易日）、`code`、`name`、因子值列和 `hold`（False 表示当日空仓）。清单包含最后一个尚无收益的下一交易日。目前有 `MarketTiming`：主板中按 Amihud 非流动性取股票池、按波动率选股，用池子净值均线和微盘股同涨同跌程度择时。
+2. **回测**（`strategies_evaluation/strategy_backtest.py`）：信号日的下一交易日 10 点等权调仓，持有到再下一交易日 10 点；10 点价格涨停不买入、跌停不卖出；分理论、扣费（双边换手 × `fee_rate`）、扣费+滑点（买入按 10 点最高价、卖出按最低价）三种口径。
+3. **报告**（`strategies_evaluation/strategy_report.py`）：读回测输出生成 HTML，分总览（指标卡片、净值和回撤曲线，点击某一天查看当日逐股明细）、分年（分年指标、月度收益矩阵）和下一交易日持仓（含买入 / 保持 / 卖出动作）三个标签页。
+
+`holdings_path` 为空时运行 `strategy` 指定的策略；填入一份持仓清单 CSV 的路径时跳过策略，直接回测该清单。输出位于 `a_share_market_data/strategies_evaluation_output/<策略名>/`：
+
+| 文件 | 内容 |
+| --- | --- |
+| `<策略名>Holdings.csv` | 每日持仓清单 |
+| `<策略名>Curve.csv` | 每日仓位、换手、三种口径的日收益、净值和动态回撤 |
+| `<策略名>Metrics.csv` | 全区间和每个年份、三种口径的绩效指标（收益、波动、Sharpe、Sortino、最大回撤及起止日、Calmar、胜率、换手等），存原始数值 |
+| `<策略名>Details.csv` | 每日逐股明细：前日 / 当日权重、后复权买入价和卖出价、个股收益、贡献、费用、滑点、涨跌停和停牌标记 |
+| `<策略名>Evaluation.html` | 交互式回测报告 |
 
 ## 结果示例
 

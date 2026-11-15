@@ -2,8 +2,6 @@ import os
 
 import pandas as pd
 
-from trading_strategies.strategies_evaluation.strategy_evaluation import StrategyEvaluation
-
 
 class MarketTiming:
     MAIN_BOARD_PREFIXES = ("000", "001", "002", "003", "600", "601", "603", "605")
@@ -11,25 +9,24 @@ class MarketTiming:
     def __init__(self, config):
         self.factor_data_dir = config["factor_data_dir"]
         self.stock_daily_dir = config["stock_daily_dir"]
-        self.backtest_data_dir = config["backtest_data_dir"]
-        self.limit_price_dir = config["limit_price_dir"]
         self.stock_st_status_dir = config["stock_st_status_dir"]
         self.stock_info_path = config["stock_info_path"]
         self.output_dir = os.path.join(config["output_dir"], type(self).__name__)
         self.start_date = config["start_date"]
-        self.stock_board = config["stock_board"]
-        self.pool_factor = config["pool_factor"]
-        self.pool_ascending = config["pool_ascending"]
-        self.pool_size = config["pool_size"]
-        self.select_factor = config["select_factor"]
-        self.select_ascending = config["select_ascending"]
-        self.select_size = config["select_size"]
-        self.timing_window = config["timing_window"]
-        self.comovement_size = config["comovement_size"]
-        self.comovement_window = config["comovement_window"]
-        self.comovement_lookback = config["comovement_lookback"]
-        self.comovement_threshold = config["comovement_threshold"]
-        self.fee_rate = config["fee_rate"]
+        # 策略专有参数放在 config["strategies"] 中以类名为键的子 dict 里。
+        params = config["strategies"][type(self).__name__]
+        self.stock_board = params["stock_board"]
+        self.pool_factor = params["pool_factor"]
+        self.pool_ascending = params["pool_ascending"]
+        self.pool_size = params["pool_size"]
+        self.select_factor = params["select_factor"]
+        self.select_ascending = params["select_ascending"]
+        self.select_size = params["select_size"]
+        self.timing_window = params["timing_window"]
+        self.comovement_size = params["comovement_size"]
+        self.comovement_window = params["comovement_window"]
+        self.comovement_lookback = params["comovement_lookback"]
+        self.comovement_threshold = params["comovement_threshold"]
 
     def select_stocks(self):
         """按板块筛选后，每日取 pool_factor 排名前 pool_size 只作为股票池，并在池内按 select_factor 排名。"""
@@ -78,7 +75,7 @@ class MarketTiming:
         return stocks
 
     def run(self):
-        """选股、择时后保存每日候选股票清单（含下一交易日，hold 为 False 表示空仓），并自动生成策略评估报告。"""
+        """选股、择时后保存并返回每日持仓清单（含下一交易日，hold 为 False 表示空仓），回测和报告由 evaluation.py 统一完成。"""
         stocks = self.select_stocks()
         stocks = self.time_market(stocks)
         stocks = stocks.loc[stocks["select_rank"].le(self.select_size) & stocks["date"].ge(self.start_date), ["date", "trade_date", "code", self.pool_factor, self.select_factor, "hold"]]
@@ -87,7 +84,7 @@ class MarketTiming:
         stock_info = pd.read_csv(self.stock_info_path, usecols=["code", "name"], dtype=str)
         stock_info["code"] = stock_info["code"].str.split(".").str[0]
         stocks.insert(3, "name", stocks["code"].map(stock_info.set_index("code")["name"]))
+        stocks.insert(0, "strategy", type(self).__name__)
         os.makedirs(self.output_dir, exist_ok=True)
         stocks.to_csv(os.path.join(self.output_dir, f"{type(self).__name__}Holdings.csv"), index=False, encoding="utf-8-sig")
-        StrategyEvaluation(stocks, self.backtest_data_dir, self.limit_price_dir, self.output_dir, self.fee_rate).evaluate()
         return stocks

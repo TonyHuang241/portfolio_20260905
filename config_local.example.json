@@ -1,3 +1,4 @@
 {
-    "root_dir": "/absolute/path/to/parent"
+    "root_dir": "/absolute/path/to/parent",
+    "python_path": "/absolute/path/to/python"
 }

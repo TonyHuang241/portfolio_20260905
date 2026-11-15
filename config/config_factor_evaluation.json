@@ -14,6 +14,6 @@
     "stock_board": "main board",
     "group_number": 10,
     "holding_periods": [1, 5, 10, 20],
-    "processes": 24,
+    "processes": 16,
     "update_all": 1
 }
