@@ -30,8 +30,8 @@ class MarketTiming:
 
     def select_stocks(self):
         """按板块筛选后，每日取 pool_factor 排名前 pool_size 只作为股票池，并在池内按 select_factor 排名。"""
-        stocks = pd.read_parquet(os.path.join(self.factor_data_dir, f"{self.pool_factor.split('_')[0]}.parquet"), columns=["code", "date", self.pool_factor])
-        stocks = stocks.merge(pd.read_parquet(os.path.join(self.factor_data_dir, f"{self.select_factor.split('_')[0]}.parquet"), columns=["code", "date", self.select_factor]), on=["code", "date"], how="left")
+        stocks = pd.read_parquet(os.path.join(self.factor_data_dir, f"{self.pool_factor}.parquet"), columns=["code", "date", self.pool_factor])
+        stocks = stocks.merge(pd.read_parquet(os.path.join(self.factor_data_dir, f"{self.select_factor}.parquet"), columns=["code", "date", self.select_factor]), on=["code", "date"], how="left")
         # main board 只保留沪深主板，all 不筛选。
         if self.stock_board == "main board":
             stocks = stocks.loc[stocks["code"].str.startswith(self.MAIN_BOARD_PREFIXES)]

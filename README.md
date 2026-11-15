@@ -20,7 +20,7 @@
 
 第一次使用时按表格顺序执行。仓库不含行情数据，需要自行准备。前三个任务都有 `update_all` 字段：设为 `1` 时全量重算并覆盖结果，设为 `0` 时只补算缺失的日期。
 
-依赖：pandas、numpy、pyarrow、matplotlib、tqdm。
+依赖：pandas、numpy、pyarrow、tqdm。
 
 ## 目录结构
 
@@ -57,29 +57,28 @@ factor_list.csv          # 高频因子清单及算子公式
 | 中频 | 历史日线和财务数据 | `LnSize`、`BM`、`MarketBeta`、`Mom1m`、`Mom1y`、`AmihudIlliquidity` 及其变体、`PastorStambaughGamma` |
 
 - 股票池剔除 ST 股，以及连续交易不满 250 天的股票。
-- 每个因子额外输出 5、20、60、120、250 日滚动均值列（如 `Mom1m_250_m`）。评估时，这些列也作为独立因子。
-- 新增因子的方法：在 [high_freq_factor_calculation/](factors/construction/high_freq_factor_calculation/) 或 [middle_freq_factor_calculation/](factors/construction/middle_freq_factor_calculation/) 下新建与类名同名的文件，继承 `_BaseHighFreqFactor` 或 `_BaseMiddleFreqFactor`，实现 `calculate()`，返回 `code`、`date` 和因子列。构建器按文件名自动注册。
+- 每个脚本对应一个因子，输出的 parquet 只有 `code`、`date` 和以因子名命名的一列因子值。多日均值等变体单独写成因子，如 `AmihudIlliquidity1m` 是最近 20 个交易日 `AmihudIlliquidity` 的均值。
+- 新增因子的方法：在 [high_freq_factor_calculation/](factors/construction/high_freq_factor_calculation/) 或 [middle_freq_factor_calculation/](factors/construction/middle_freq_factor_calculation/) 下新建与类名同名的文件，继承 `_BaseHighFreqFactor` 或 `_BaseMiddleFreqFactor`，实现 `calculate()`，返回 `code`、`date` 和以类名命名的一列因子值。构建器按文件名自动注册。中频因子还需设置 `lookback_days`：增量更新时构建器按其最大值多预留 1 个交易日截取历史日线，因此因子最早用到的日线距当日不能超过 `lookback_days` + 1 个交易日。
 
 ## 因子评估
 
-`evaluation_mode` 设为 `single` 时，只评估 `specified_column` 指定的一列；设为 `multi` 时，评估因子目录下的所有列。评估口径如下：
+`evaluation_mode` 设为 `single` 时，只评估 `specified_column` 指定的因子（即因子文件名）；设为 `multi` 时，评估因子目录下的全部因子。每个因子文件只读取与文件名同名的一列。两种模式最后都用因子目录中已有评估结果的全部因子生成同一份 HTML 报告。评估口径如下：
 
 - **股票池**：按 `stock_board`（`main board` 或 `all`）筛选板块，再按上月末市值每日保留最小的 `stock_pool` 只股票。
 - **收益**：因子值滞后一天使用，当日 10:00 买入，持有到下一交易日 10:00。
 - **持有期**：`holding_periods` 设定持有的交易日数（默认 1、5、10、20 天）。持有 N 天时每个交易日买入一批、同时持有最近 N 批，各批等权，组合日收益取各批当日收益的均值；IC 和 RankIC 用之后 N 天的复利累计收益计算，换手率为当日买入批与卖出批（N 天前买入）的成分变动比例，不折算为日均。持有 1 天的结果始终计算，持仓清单和批量指标汇总都基于它。
 - **分组**：每日按因子值等分为 `group_number` 组，计算各组收益、IC、RankIC 和换手率。IC 均值为正时做多因子值最高的组，否则做多最低的组。不计交易成本。
-- **多因子分析**：批量模式还会计算全部原始因子的截面相关性矩阵，并对 `base_factor_list` 中的基础因子做截面回归，计算它们对其他因子的解释度 R²。
+- **多因子分析**：报告中全部因子并列比较；相关性矩阵为因子两两之间每日截面 Pearson 相关系数的时间均值，使用当日因子值，按相同的板块和小市值规则取股票池，逐日截面标准化后计算。
 
 输出默认位于 `a_share_market_data/factors_evaluation_output/`：
 
 | 路径 | 内容 |
 | --- | --- |
-| `numerical_output/<因子列>.csv` | 每日分组收益、IC、RankIC、股票数、换手率；持有 1 天以外的列加 `_<N>d` 后缀，如 `group_1_5d`、`IC_5d` |
-| `numerical_output/factor_comparison.csv` | 批量模式的指标汇总 |
-| `visualization_output/single_factor_evaluation/<因子>_report.html` | 单因子交互式报告，每个因子一份，合并原始值、各滚动均值列和各持有期：窗口对比、持有期对比、窗口详情、分年表现 |
-| `visualization_output/multi_factor_evaluation_report.html` | 批量模式报告：指标对比、相关性矩阵、R² 曲线；点击因子后在页面底部嵌入该因子的单因子报告 |
-| `stock_list/<因子列>.csv` | 历史每日多头持仓 |
-| `stock_list/next_day/<因子列>.csv` | 由最新收盘信号得到的下一交易日目标持仓 |
+| `numerical_output/<因子>.csv` | 每日分组收益、IC、RankIC、股票数、换手率；持有 1 天以外的列加 `_<N>d` 后缀，如 `group_1_5d`、`IC_5d` |
+| `numerical_output/factor_comparison.csv` | 批量模式的指标汇总，每个因子一行 |
+| `visualization_output/factor_evaluation_report.html` | 因子评估报告，单个可离线打开的 HTML 文件：上半部分并列对比全部因子（指标对比表、分组年化收益、累计收益与累积 IC 曲线、分年对比、相关性矩阵），下半部分用按钮切换因子，查看因子详情和分年表现；持有期和分析时间区间在页面中切换 |
+| `stock_list/<因子>.csv` | 历史每日多头持仓 |
+| `stock_list/next_day/<因子>.csv` | 由最新收盘信号得到的下一交易日目标持仓 |
 
 持仓清单会附上 `__daily_data_update/stock_info.csv` 中的股票名称、行业等信息。
 
@@ -88,22 +87,22 @@ factor_list.csv          # 高频因子清单及算子公式
 `config/config_trading_strategies.json` 中公共字段放在顶层，各策略的专有参数放在 `strategies` 下以策略类名为键的子 dict 里，`strategy` 指定运行哪个策略。代码分三层：
 
 1. **策略**（[trading_strategies/strategies/](trading_strategies/strategies/)）：文件名即类名，输出每日持仓清单，列为 `strategy`、`date`（信号日）、`trade_date`（实际交易日）、`code`、`name`、因子值列和 `hold`（False 表示当日空仓）。清单包含最后一个尚无收益的下一交易日。目前有 `MarketTiming`：主板中按 Amihud 非流动性取股票池、按波动率选股，用池子净值均线和微盘股同涨同跌程度择时。
-2. **回测**（`strategies_evaluation/strategy_backtest.py`）：信号日的下一交易日 10 点等权调仓，持有到再下一交易日 10 点；10 点价格涨停不买入、跌停不卖出；分理论、扣费（双边换手 × `fee_rate`）、扣费+滑点（买入按 10 点最高价、卖出按最低价）三种口径。
-3. **报告**（`strategies_evaluation/strategy_report.py`）：读回测输出生成 HTML，分总览（指标卡片、净值和回撤曲线，点击某一天查看当日逐股明细）、分年（分年指标、月度收益矩阵）和下一交易日持仓（含买入 / 保持 / 卖出动作）三个标签页。
+2. **回测**（`strategies_evaluation/strategy_backtest.py`）：以 `initial_cash` 为初始现金，信号日的下一交易日 10 点按未复权价等权调仓，持有到再下一交易日 10 点。调仓时把现金与可卖持仓的变现金额等分给目标股票，每只向下取整到 100 股，剩余部分持有现金，现金不会透支；持仓数量每日按复权因子的变化调整；10 点价格涨停不买入、跌停不卖出，停牌不能买卖。三种口径是同一组成交下的盈亏（元）：理论按 10 点价格成交且不收费，扣费再减去费用（每只股票每天的买入或卖出算一笔，费用 = 成交金额 × `fee_rate`，不足 `min_fee` 时按 `min_fee` 收），扣费+滑点再减去买入按 10 点最高价、卖出按最低价成交的差额，即账户的真实盈亏。
+3. **报告**（`strategies_evaluation/strategy_report.py`）：读回测输出生成 HTML，分总览（指标卡片、累计盈亏（元）和回撤曲线，可用滑块选择时间窗口，指标卡片和两条曲线都按窗口重新计算、盈亏从 0 开始累计，点击某一天查看当日逐股明细）、分年（分年指标、月度收益矩阵）和下一交易日持仓（含买入 / 保持 / 卖出动作）三个标签页。
 
 `holdings_path` 为空时运行 `strategy` 指定的策略；填入一份持仓清单 CSV 的路径时跳过策略，直接回测该清单。输出位于 `a_share_market_data/strategies_evaluation_output/<策略名>/`：
 
 | 文件 | 内容 |
 | --- | --- |
 | `<策略名>Holdings.csv` | 每日持仓清单 |
-| `<策略名>Curve.csv` | 每日仓位、换手、三种口径的日收益、净值和动态回撤 |
+| `<策略名>Curve.csv` | 每日调仓后的现金、持仓市值、仓位、换手，三种口径的日盈亏（元）、账户资产（元）、日收益率和动态回撤 |
 | `<策略名>Metrics.csv` | 全区间和每个年份、三种口径的绩效指标（收益、波动、Sharpe、Sortino、最大回撤及起止日、Calmar、胜率、换手等），存原始数值 |
-| `<策略名>Details.csv` | 每日逐股明细：前日 / 当日权重、后复权买入价和卖出价、个股收益、贡献、费用、滑点、涨跌停和停牌标记 |
+| `<策略名>Details.csv` | 每日逐股明细：调仓前 / 调仓后股数、未复权买入价和卖出价、个股收益、盈亏、费用、滑点（金额单位为元）、涨跌停和停牌标记 |
 | `<策略名>Evaluation.html` | 交互式回测报告 |
 
 ## 结果示例
 
-### AmihudIlliquidity 单因子报告
+### AmihudIlliquidity 单因子表现
 
 Amihud 非流动性 = 日收益率绝对值 / 当日成交额。评估区间为 2020-01-02 至 2026-09-17，样本为主板市值最小的 2000 只股票，每日分 10 组：
 
@@ -119,7 +118,7 @@ Amihud 非流动性 = 日收益率绝对值 / 当日成交额。评估区间为 
 
 ### 因子相关性矩阵
 
-下图取自批量评估报告，数值为每日截面 Pearson 相关系数的时间均值。前 4 个是基础因子 `MarketBeta`、`LnSize`、`BM`、`Mom1y`。
+下图取自因子评估报告的相关性矩阵，数值为每日截面 Pearson 相关系数的时间均值。
 
 ![因子相关性矩阵](docs/images/factor_correlation_matrix.png)
 

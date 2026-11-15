@@ -6,14 +6,13 @@
 
     "evaluation_mode": "multi",
     "factor_data_dir": "a_share_market_data/factors/",
-    "base_factor_list": ["MarketBeta", "LnSize", "BM", "Mom1y"],
-    
+
     "specified_column": "",
     "start_date": "20180101",
-    "stock_pool": 2000,
+    "stock_pool": 200,
     "stock_board": "main board",
     "group_number": 10,
     "holding_periods": [1, 5, 10, 20],
-    "processes": 16,
+    "processes": 36,
     "update_all": 1
 }

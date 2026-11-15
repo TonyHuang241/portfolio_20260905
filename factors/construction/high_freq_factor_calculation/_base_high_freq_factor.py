@@ -1,5 +1,5 @@
 class _BaseHighFreqFactor:
-    """Base class shared by all daily high-frequency factors."""
+    """高频因子基类：接收单个交易日多只股票的分钟行情，calculate() 返回 code、date 和以因子类名命名的一列因子值。"""
 
     def __init__(self, minutes, **kwargs):
         if minutes is None:

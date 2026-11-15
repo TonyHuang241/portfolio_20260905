@@ -5,7 +5,7 @@ class AmihudIlliquidity(_BaseMiddleFreqFactor):
     factor_name = "AmihudIlliquidity"
     lookback_days = 1
     factor_type = "liquidity"
-    calculation_logic = "日收益率绝对值除以当日成交额，收益使用输入价格的复权口径；多日 Amihud 非流动性见构建器输出的滚动均值列。"
+    calculation_logic = "日收益率绝对值除以当日成交额，收益使用输入价格的复权口径；最近 20 个交易日的均值见 AmihudIlliquidity1m。"
 
     def calculate(self):
         daily = self.daily[["code", "date", "close", "money"]].copy()

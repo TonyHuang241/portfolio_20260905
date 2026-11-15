@@ -8,11 +8,13 @@
     "output_dir": "a_share_market_data/strategies_evaluation_output/",
     "holdings_path": "",
     "strategy": "MarketTiming",
-    "start_date": "20150101",
+    "start_date": "20180101",
     "fee_rate": 0.001,
+    "min_fee": 5,
+    "initial_cash": 100000,
     "strategies": {
         "MarketTiming": {
-            "stock_board": "main board", "pool_factor": "AmihudIlliquidity_20_m", "pool_ascending": false, "pool_size": 100,
+            "stock_board": "main board", "pool_factor": "AmihudIlliquidity1m", "pool_ascending": false, "pool_size": 100,
             "select_factor": "Volatility1m", "select_ascending": true, "select_size": 10,
             "timing_window": 20, "comovement_size": 400, "comovement_window": 20, "comovement_lookback": 750, "comovement_threshold": 0.5
         }

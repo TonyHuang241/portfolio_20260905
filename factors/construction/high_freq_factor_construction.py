@@ -136,27 +136,17 @@ class HighFreqFactorConstructor:
         )
         with Pool(processes=self.processes) as pool:
             results = pool.imap_unordered(HighFreqFactorConstructor._calculate_trade_date, tasks)
-            trade_date_progress = tqdm(results, total=len(pending_dates), desc="Updating raw factor values", unit="trading day")
+            trade_date_progress = tqdm(results, total=len(pending_dates), desc="Updating factor values", unit="trading day")
             for trade_date, daily_results in trade_date_progress:
                 trade_date_progress.set_postfix_str(f"Completed date: {trade_date}")
                 for factor_name, daily_factor in daily_results.items():
                     factor_data[factor_name].append(daily_factor)
 
-        # 逐个计算并保存，避免同时保留全部因子的滚动指标。
+        # 逐个因子合并历史数据与新算出的数据后保存，每个文件只有 code、date 和因子值三列。
         os.makedirs(self.output_dir, exist_ok=True)
-        for factor_name in tqdm(self.factors, desc="Updating derived factor values", unit="factor"):
+        for factor_name in tqdm(self.factors, desc="Saving factor values", unit="factor"):
             factor = pd.concat(factor_data.pop(factor_name), ignore_index=True)
             factor = factor.drop_duplicates(["code", "date"], keep="last")
             factor = factor.sort_values(["code", "date"]).reset_index(drop=True)
-            # 每只股票补齐全部交易日，停牌等缺失日期因子值为空、不向前补全，使按条滚动的窗口即为最近 N 个交易日；滚动后去掉补齐的行。
-            factor["is_calculated"] = True
-            factor = factor.set_index(["code", "date"]).reindex(pd.MultiIndex.from_product([factor["code"].unique(), sorted(factor["date"].unique())], names=["code", "date"])).reset_index()
-            factor_by_code = factor.groupby("code")[factor_name]
-            for window in (5, 20, 60, 120, 250):
-                rolling = factor_by_code.rolling(window)
-                factor[f"{factor_name}_{window}_m"] = rolling.mean().droplevel(0).reindex(factor.index)
-                # factor[f"{factor_name}_{window}_std"] = rolling.std().droplevel(0).reindex(factor.index)
-            factor = factor.loc[factor["is_calculated"].eq(True)].drop(columns="is_calculated")
-
             factor.to_parquet(f"{self.output_dir}/{factor_name}.parquet", index=False)
-            del factor, factor_by_code, rolling
+            del factor

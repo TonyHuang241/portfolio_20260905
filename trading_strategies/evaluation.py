@@ -16,6 +16,8 @@ class StrategyEvaluation:
         self.backtest_data_dir = config["backtest_data_dir"]
         self.limit_price_dir = config["limit_price_dir"]
         self.fee_rate = config["fee_rate"]
+        self.min_fee = config["min_fee"]
+        self.initial_cash = config["initial_cash"]
 
     def run(self):
         """holdings_path 为空时运行 strategy 指定的策略生成持仓清单，否则直接读取该清单；然后回测并生成报告。"""
@@ -33,8 +35,8 @@ class StrategyEvaluation:
             # 策略按文件名加载，文件名即类名，新增策略不需要改动这里。
             module = import_module(f"trading_strategies.strategies.{self.strategy}")
             holdings = getattr(module, self.strategy)(self.config).run()
-        StrategyBacktest(holdings, self.backtest_data_dir, self.limit_price_dir, self.output_dir, self.fee_rate).run()
-        StrategyReport(self.output_dir, holdings["strategy"].iloc[0], self.fee_rate).run()
+        StrategyBacktest(holdings, self.backtest_data_dir, self.limit_price_dir, self.output_dir, self.fee_rate, self.min_fee, self.initial_cash).run()
+        StrategyReport(self.output_dir, holdings["strategy"].iloc[0], self.fee_rate, self.min_fee, self.initial_cash).run()
 
 
 def run(config):

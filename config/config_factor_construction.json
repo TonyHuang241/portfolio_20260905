@@ -21,8 +21,8 @@
     "adj_factor_dir": "a_share_market_data/adj_factor/",
     "output_dir": "a_share_market_data/factors/",
     
-    "processes": 16,
+    "processes": 36,
     "start_date": "20150101",
-    "end_date": "20260930",
+    "end_date": "20270930",
     "update_all": 1
 }

@@ -2,16 +2,14 @@ from multiprocessing import Pool
 from pathlib import Path
 
 import pandas as pd
-import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from factors.evaluation.single_factor_evaluation_v1 import SingleFactorEvaluation, _clear_existing_results
-from factors.evaluation.factor_correlation_analysis.factor_correlation_analyzer import FactorCorrelationAnalyzer
 from factors.evaluation.results_visualization.results_visualizer import ResultsVisualizer
 
 
 class MultiFactorEvaluation:
-    """遍历因子目录中的 Parquet 文件，评估所有原始及衍生因子列。"""
+    """遍历因子目录中的 Parquet 文件，每个文件评估与文件名同名的因子列，再生成全部因子的评估报告。"""
     def __init__(self, config):
         self.config = config
         self.factor_dir = Path(config["factor_data_dir"])
@@ -23,7 +21,7 @@ class MultiFactorEvaluation:
         config, factor_path, factor_name, prices_by_date = task
         factor_data = pd.read_parquet(factor_path, columns=["code", "date", factor_name])
         evaluator = SingleFactorEvaluation({**config, "specified_column": factor_name}, factor_data)
-        return {"因子文件": factor_path.name, **evaluator.evaluate(prices_by_date=prices_by_date, plot_report=False)}
+        return evaluator.evaluate(prices_by_date=prices_by_date, plot_report=False)
 
     def evaluate(self):
         factor_files = sorted(self.factor_dir.glob("*.parquet"))
@@ -32,20 +30,12 @@ class MultiFactorEvaluation:
         if self.config.get("update_all") == 1:
             _clear_existing_results(self.config["output_dir"], self.config.get("visualization_output_dir"))
 
-        # 按因子列并行，imap 保持结果顺序与因子文件、列的顺序一致。
-        tasks = []
-        for factor_path in factor_files:
-            for factor_name in pq.read_schema(factor_path).names:
-                if factor_name not in ("code", "date"):
-                    tasks.append((self.config, factor_path, factor_name, prices_by_date))
+        # 每个因子文件一个任务，只评估与文件名同名的列，文件中的其他列（如旧格式的滚动均值列）一律忽略；imap 保持结果顺序与因子文件顺序一致。
+        tasks = [(self.config, factor_path, factor_path.stem, prices_by_date) for factor_path in factor_files]
         with Pool(processes=self.processes) as pool:
             records = list(tqdm(pool.imap(MultiFactorEvaluation._evaluate_column, tasks), total=len(tasks), desc="Evaluating factors", unit="factor"))
 
-        # 每个因子文件生成一份报告，合并原始值和各滚动均值列的评估结果。
-        for factor_path in tqdm(factor_files, desc="Plotting reports", unit="factor"):
-            ResultsVisualizer.plot_results_html(factor_path, self.config["output_dir"], self.config["start_date"], self.config.get("visualization_output_dir"))
-
         summary = pd.DataFrame(records)
         summary.to_csv(Path(self.config["output_dir"]) / "factor_comparison.csv", index=False, encoding="utf-8-sig")
-        FactorCorrelationAnalyzer(self.config).plot_results_html(summary)
+        ResultsVisualizer.plot_results_html(self.config)
         return summary

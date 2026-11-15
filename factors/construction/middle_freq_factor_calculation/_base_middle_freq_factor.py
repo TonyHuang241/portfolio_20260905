@@ -1,6 +1,7 @@
 class _BaseMiddleFreqFactor:
     """中频因子基类：接收含 code、date 和价格字段的多股票历史日线，以及以 code、report_date（报告期末）为主键的季度财务数据（公告日为 date，同日可能公告多期；流量变量为 *_ttm 和当季度值 *_q）。"""
 
+    # 回看的交易日数：构建器按各因子 lookback_days 的最大值另加 1 天截取历史日线，因子最早用到的日线距当日不能超过 lookback_days + 1 个交易日，否则增量更新与全量计算结果不一致。
     lookback_days = 0
 
     def __init__(self, daily, financial_data=None, **kwargs):

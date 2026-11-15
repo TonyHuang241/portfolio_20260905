@@ -55,14 +55,9 @@ class MiddleFreqFactorConstructor:
 
     @staticmethod
     def _calculate_factor(task):
-        """在工作进程中计算单个因子及其滚动均值，筛选股票池后与历史数据合并保存。"""
-        factor_name, factor_class, daily, financial_data, stock_pool, history_factor, pending_dates, rolling_windows, output_dir = task
+        """在工作进程中计算单个因子，筛选股票池后与历史数据合并保存。"""
+        factor_name, factor_class, daily, financial_data, stock_pool, history_factor, pending_dates, output_dir = task
         factor = factor_class(daily=daily, financial_data=financial_data).calculate()
-        factor = factor.sort_values(["code", "date"]).reset_index(drop=True)
-        factor_by_code = factor.groupby("code")[factor_name]
-        for window in rolling_windows:
-            factor[f"{factor_name}_{window}_m"] = factor_by_code.rolling(window).mean().droplevel(0).reindex(factor.index)
-
         factor = factor.loc[factor["date"].isin(pending_dates)]
         factor = factor.merge(stock_pool, on=["code", "date"], how="inner")
         factor = pd.concat([history_factor, factor], ignore_index=True)
@@ -73,7 +68,7 @@ class MiddleFreqFactorConstructor:
         return factor_name
 
     def update_factors(self):
-        """一次读取日线，预留因子回看期及滚动窗口，计算完均值后筛选输出。"""
+        """一次读取日线，预留因子回看期，计算后筛选输出。"""
         if not self.factors:
             return
 
@@ -83,25 +78,26 @@ class MiddleFreqFactorConstructor:
         update_dates = {date for date in trade_dates if self.start_date <= date <= self.end_date}
         factor_data = {}
         pending_by_factor = {}
-        rolling_windows = (5, 20, 60, 120, 250)
 
         for factor_name in self.factors:
             factor_path = os.path.join(self.output_dir, f"{factor_name}.parquet")
             legacy_factor_path = os.path.join(self.output_dir, f"{factor_name}.csv")
+            # 历史文件只读取 code、date 和因子列，旧文件中的其他列（如滚动均值列）在重新保存时去掉。
             if self.update_all == 0 and os.path.exists(factor_path):
-                factor_data[factor_name] = pd.read_parquet(factor_path)
+                factor_data[factor_name] = pd.read_parquet(factor_path, columns=["code", "date", factor_name])
                 factor_data[factor_name][["code", "date"]] = factor_data[factor_name][["code", "date"]].astype(str)
             elif self.update_all == 0 and os.path.exists(legacy_factor_path):
-                factor_data[factor_name] = pd.read_csv(legacy_factor_path, dtype={"code": str, "date": str})
+                factor_data[factor_name] = pd.read_csv(legacy_factor_path, usecols=["code", "date", factor_name], dtype={"code": str, "date": str})
             else:
                 factor_data[factor_name] = pd.DataFrame(columns=["code", "date", factor_name])
-            pending_by_factor[factor_name] = update_dates - set(factor_data[factor_name]["date"])
+            pending_by_factor[factor_name] = update_dates - set(factor_data[factor_name]["date"].unique())
 
         pending_dates = sorted(set.union(*pending_by_factor.values()))
         if not pending_dates:
             return
 
-        history_days = 252 + max(factor.lookback_days for factor in self.factors.values())
+        # 因子最早用到的日线距当日的交易日数一般等于 lookback_days，个别因子多 1 天（如 PastorStambaughGamma 以前一交易日的收益为自变量），故多预留 1 个交易日，使增量更新与全量计算结果一致。
+        history_days = max(factor.lookback_days for factor in self.factors.values()) + 1
         history_start = trade_dates[max(0, trade_dates.index(pending_dates[0]) - history_days)]
         # 计算前剔除停牌（数据更新中按全天成交量为 0 判定）的日线，以及 ST 和连续交易不满 250 天的观测。
         daily = daily.loc[daily["date"].ge(history_start)]
@@ -114,9 +110,9 @@ class MiddleFreqFactorConstructor:
         financial_data = pd.read_parquet(self.financial_data_path)
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # 按因子并行，每个工作进程完成单个因子的计算、滚动均值和合并保存。
+        # 按因子并行，每个工作进程完成单个因子的计算和合并保存。
         tasks = [
-            (factor_name, factor_class, daily, financial_data, stock_pool, factor_data[factor_name], pending_by_factor[factor_name], rolling_windows, self.output_dir)
+            (factor_name, factor_class, daily, financial_data, stock_pool, factor_data[factor_name], pending_by_factor[factor_name], self.output_dir)
             for factor_name, factor_class in self.factors.items() if pending_by_factor[factor_name]
         ]
         with Pool(processes=self.processes) as pool:
