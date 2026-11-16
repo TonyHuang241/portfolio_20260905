@@ -66,6 +66,21 @@ class DataUpdater:
         stock_st_status_dir.mkdir(parents=True, exist_ok=True)
         stock_st_status.to_parquet(stock_st_status_dir / "stock_st_status.parquet", index=False)
 
+        # 指数成分股：源文件是每半年末一期（外加下载时最新一期）的成分股快照，按原样储存，date 为快照日期，每行是某指数某期的一只成分股。
+        # 快照不是每日数据，使用时先把交易日对应到当天及之前最近一期快照，再按 code 合并。
+        index_stock = pd.read_csv(Path(self.new_data_dir) / "index_stocks_history.csv", dtype={"index_code": str, "code": str, "date": str})
+        index_stock["code"] = self._format_codes(index_stock["code"])
+        index_stock["date"] = self._format_dates(index_stock["date"])
+        index_stock = index_stock.sort_values(["index_code", "date", "code"])
+        index_stock_dir = Path(self.output_dir) / "index_stock"
+        index_stock_dir.mkdir(parents=True, exist_ok=True)
+        index_stock[["date", "code", "index_code", "index_name"]].to_parquet(index_stock_dir / "index_stock.parquet", index=False)
+
+        # 指数清单：每个指数一行，记录最新一期快照的日期和成分股数量。
+        index_list = index_stock.loc[index_stock["date"].eq(index_stock.groupby("index_code")["date"].transform("max"))]
+        index_list = index_list.groupby(["index_code", "index_name", "date"], as_index=False).agg(stock_count=("code", "nunique"))
+        index_list.to_csv(index_stock_dir / "index_list.csv", index=False, encoding="utf-8-sig")
+
         mkcap = pd.read_csv(Path(self.new_data_dir) / "mkcap.csv", dtype={"code": str, "trading_day": str})
         mkcap["code"] = self._format_codes(mkcap["code"])
         mkcap = mkcap.rename(columns={"trading_day": "date", "total_value": "mkcap"})

@@ -9,7 +9,7 @@ from factors.construction import factors
 from factors.evaluation import evaluation as factor_evaluation
 from trading_strategies import evaluation as strategy_evaluation
 
-CONFIG_FILE = "portfolio_20260905/config/config_factor_evaluation.json"
+CONFIG_FILE = "portfolio_20260905/config/config_data_update.json"
 CONFIG_LOCAL_FILE = Path(__file__).resolve().parent / "config_local.json"
 
 def load_config(config_file=CONFIG_FILE):

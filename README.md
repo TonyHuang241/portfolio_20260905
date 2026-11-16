@@ -37,7 +37,7 @@ factor_list.csv          # 高频因子清单及算子公式
 
 ## 数据更新
 
-从 `new_data_dir` 读取 `daily_minutes.csv`、`stock_exrights.csv`、`limit_price.csv`、`stock_st_status.csv`、`mkcap.csv` 和 `fundamentals_quarterly.csv`，结果写到 `output_dir`：
+从 `new_data_dir` 读取 `daily_minutes.csv`、`stock_exrights.csv`、`limit_price.csv`、`stock_st_status.csv`、`index_stocks_history.csv`、`mkcap.csv` 和 `fundamentals_quarterly.csv`，结果写到 `output_dir`：
 
 | 输出 | 内容 |
 | --- | --- |
@@ -46,6 +46,8 @@ factor_list.csv          # 高频因子清单及算子公式
 | `stock_daily/daily_stock_data_10am.parquet` | 每日 10:00 后复权价格，作为回测成交价；附与日线相同的 `trade_day`，停牌标记 `is_suspended`（停牌日保留价格，不计入连续交易天数，记为空），以及连续交易天数 `consecutive_trading_days`（停牌 10 个交易日及以上时重新计数） |
 | `fundamentals/financial_data.parquet` | 季度财报，每个报告期一行，以 `code`、`report_date`（报告期末）为唯一键，公告日为 `date`（匹配日线时使用）；流量变量转为 TTM（`*_ttm`）和当季度值（`*_q`） |
 | `fundamentals/`、`limit_price/`、`stock_st_status/` | 日度和月度市值、涨跌停价、ST 状态 |
+| `index_stock/index_stock.parquet` | 指数成分股快照长表，列为 `date`、`code`、`index_code`、`index_name`，每行是某指数某期的一只成分股；每半年末一期（外加下载时最新一期），`date` 为快照日期，不是每日数据，使用时先把交易日对应到当天及之前最近一期快照再合并 |
+| `index_stock/index_list.csv` | 指数清单，每个指数一行：`index_code`、`index_name`、最新一期快照日期 `date` 和该期成分股数量 `stock_count` |
 
 ## 因子构建
 
